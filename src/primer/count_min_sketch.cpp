@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <mutex>
 #include <queue>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -12,9 +13,15 @@ namespace bustub{
 
 template <typename KeyType>
 CountMinSketch<KeyType>::CountMinSketch(uint32_t width, uint32_t depth) : width_(width), depth_(depth) {
+    if (width <= 0 || depth <= 0) {
+        throw std::invalid_argument("invalid width or depth, must be positive");
+    }
     array_ = new uint32_t*[depth];
     for (size_t i = 0; i< depth; i+=1) {
         array_[i] = new uint32_t[width];
+        for (size_t j = 0; j < width; j +=1) {
+            array_[i][j] = 0;
+        }
     }
 
     hash_functions_.reserve(depth_);
@@ -93,7 +100,7 @@ template<typename KeyType>
 auto CountMinSketch<KeyType>::TopK(uint16_t k, const std::vector<KeyType> &candidates) -> std::vector<std::pair<KeyType, uint32_t>> {
     using PairType = std::pair<KeyType, uint32_t>;
     auto comp = [](const PairType& a, const PairType& b) {
-      return a.second < b.second;
+      return a.second > b.second;
      };
     std::priority_queue<PairType, std::vector<PairType>, decltype(comp)> minHeap(comp);
 
@@ -112,6 +119,7 @@ auto CountMinSketch<KeyType>::TopK(uint16_t k, const std::vector<KeyType> &candi
         minHeap.pop();
     }
 
+    std::reverse(res.begin(), res.end());
     return res;
 }
 
