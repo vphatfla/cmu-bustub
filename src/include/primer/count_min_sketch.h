@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <mutex>
 #include <utility>
 #include <vector>
 #include "common/util/hash_util.h"
@@ -27,6 +28,7 @@ public:
 
     void Clear();
 
+    // @brief creates a new sketch by comining counter values from two compatible sketches
     void Merge(const CountMinSketch<KeyType> &other);
 
     /**
@@ -38,6 +40,7 @@ private:
     uint32_t width_;
     uint32_t depth_;
     uint32_t **array_;
+    std::mutex mutex_;
 
     std::vector<std::function<size_t(const KeyType &)>> hash_functions_;
 

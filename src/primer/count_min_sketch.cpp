@@ -1,7 +1,12 @@
 #include "primer/count_min_sketch.h"
 #include <algorithm>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
+#include <queue>
+#include <utility>
+#include <vector>
 
 namespace bustub{
 
@@ -24,21 +29,29 @@ CountMinSketch<KeyType>::CountMinSketch(CountMinSketch &&other) noexcept : width
     hash_functions_ = other.hash_functions_;
 
     other.array_ = nullptr;
-    other.hash_functions_ = nullptr;
+    other.hash_functions_.clear();
 }
 
 template <typename KeyType>
 auto CountMinSketch<KeyType>::operator=(CountMinSketch &&other) noexcept -> CountMinSketch & {
     if (this != &other) {
+        for (size_t i = 0; i < depth_; i+=1) {
+            delete[] array_[i];
+        }
         delete array_;
+
+        width_ = other.width_;
+        depth_ = other.depth_;
         array_ = other.array_;
-        other.array_ = nullptr;
+        hash_functions_ = std::move(other.hash_functions_);
+        other.hash_functions_.clear();
     }
     return *this;
 }
 
 template <typename KeyType>
 void CountMinSketch<KeyType>::Insert(const KeyType &item) {
+    std::lock_guard<std::mutex> lock(mutex_);
     for (size_t row = 0; row < depth_; row += 1) {
         size_t col = hash_functions_[row](item);
         array_[row][col] += 1;
@@ -48,10 +61,61 @@ void CountMinSketch<KeyType>::Insert(const KeyType &item) {
 template <typename KeyType>
 auto CountMinSketch<KeyType>::Count(const KeyType &item) const -> uint32_t {
     uint32_t res = array_[0][hash_functions_[0](item)];
-    for (int row = 1; row < depth_; row+=1) {
-        res = std::min(res, hash_functions_[row][hash_functions_[row]](item));
+    for (size_t row = 1; row < depth_; row+=1) {
+        auto col = hash_functions_[row](item);
+        res = std::min(res, array_[row][col]);
     }
     return res;
 }
 
+template <typename KeyType>
+void CountMinSketch<KeyType>::Clear() {
+    for (size_t r = 0; r < depth_; r +=1) {
+        for (size_t c = 0; c < width_; c += 1) {
+            array_[r][c] = 0;
+        }
+    }
 };
+
+template<typename KeyType>
+void CountMinSketch<KeyType>::Merge(const CountMinSketch<KeyType> &other) {
+    assert(depth_ == other.depth_);
+    assert(width_ == other.width_);
+
+    for (size_t r = 0; r < depth_; r +=1) {
+        for (size_t c = 0; c < width_; c += 1) {
+            array_[r][c] += other.array_[r][c];
+        }
+    }
+}
+
+template<typename KeyType>
+auto CountMinSketch<KeyType>::TopK(uint16_t k, const std::vector<KeyType> &candidates) -> std::vector<std::pair<KeyType, uint32_t>> {
+    using PairType = std::pair<KeyType, uint32_t>;
+    auto comp = [](const PairType& a, const PairType& b) {
+      return a.second < b.second;
+     };
+    std::priority_queue<PairType, std::vector<PairType>, decltype(comp)> minHeap(comp);
+
+    std::vector<PairType> res;
+
+    for (KeyType c: candidates) {
+        uint32_t count = Count(c);
+        minHeap.push({c, count});
+        if (minHeap.size() > k) {
+            minHeap.pop();
+        }
+    }
+
+    while (!minHeap.empty()) {
+        res.push_back(minHeap.top());
+        minHeap.pop();
+    }
+
+    return res;
+}
+
+template class CountMinSketch<std::string>;
+template class CountMinSketch<int64_t>;  // For int64_t tests
+template class CountMinSketch<int>;      // This covers both int and int32_t
+}
