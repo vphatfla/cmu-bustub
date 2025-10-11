@@ -40,7 +40,8 @@ class CountMinSketch {
  private:
   uint32_t width_;
   uint32_t depth_;
-  uint32_t **array_;
+  std::vector<std::vector<uint32_t>> array_;
+  //  uint32_t **array_;
   std::vector<std::unique_ptr<std::mutex>> row_mutexes_;
 
   std::vector<std::function<size_t(const KeyType &)>> hash_functions_;

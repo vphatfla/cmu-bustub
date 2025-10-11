@@ -17,11 +17,13 @@ CountMinSketch<KeyType>::CountMinSketch(uint32_t width, uint32_t depth) : width_
   if (width <= 0 || depth <= 0) {
     throw std::invalid_argument("invalid width or depth, must be positive");
   }
-  array_ = new uint32_t *[depth];
+  //  array_ = new uint32_t *[depth];
+  array_.resize(depth);
   for (size_t i = 0; i < depth; i += 1) {
-    array_[i] = new uint32_t[width];
+    //    array_[i] = new uint32_t[width];
+    array_[i].reserve(width);
     for (size_t j = 0; j < width; j += 1) {
-      array_[i][j] = 0;
+      array_[i].emplace_back(0);
     }
   }
 
@@ -39,17 +41,17 @@ CountMinSketch<KeyType>::CountMinSketch(CountMinSketch &&other) noexcept : width
   hash_functions_ = std::move(other.hash_functions_);
   row_mutexes_ = std::move(other.row_mutexes_);
 
-  other.array_ = nullptr;
+  // other.array_ = nullptr;
   other.hash_functions_.clear();
 }
 
 template <typename KeyType>
 auto CountMinSketch<KeyType>::operator=(CountMinSketch &&other) noexcept -> CountMinSketch & {
   if (this != &other) {
-    for (size_t i = 0; i < depth_; i += 1) {
+    /* for (size_t i = 0; i < depth_; i += 1) {
       delete[] array_[i];
     }
-    delete array_;
+    delete array_; */
 
     width_ = other.width_;
     depth_ = other.depth_;
