@@ -106,21 +106,21 @@ auto CountMinSketch<KeyType>::TopK(uint16_t k, const std::vector<KeyType> &candi
     -> std::vector<std::pair<KeyType, uint32_t>> {
   using PairType = std::pair<KeyType, uint32_t>;
   auto comp = [](const PairType &a, const PairType &b) { return a.second > b.second; };
-  std::priority_queue<PairType, std::vector<PairType>, decltype(comp)> minHeap(comp);
+  std::priority_queue<PairType, std::vector<PairType>, decltype(comp)> min_heap(comp);
 
   std::vector<PairType> res;
 
-  for (KeyType c : candidates) {
+  for (const KeyType &c : candidates) {
     uint32_t count = Count(c);
-    minHeap.push({c, count});
-    if (minHeap.size() > k) {
-      minHeap.pop();
+    min_heap.push({c, count});
+    if (min_heap.size() > k) {
+      min_heap.pop();
     }
   }
 
-  while (!minHeap.empty()) {
-    res.push_back(minHeap.top());
-    minHeap.pop();
+  while (!min_heap.empty()) {
+    res.push_back(min_heap.top());
+    min_heap.pop();
   }
 
   std::reverse(res.begin(), res.end());
