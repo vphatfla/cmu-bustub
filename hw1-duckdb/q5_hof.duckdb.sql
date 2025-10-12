@@ -5,7 +5,6 @@ WITH hof AS (
         ON pp.playerID = halloffame.playerID
     WHERE inducted = 'Y'
     ORDER BY c_name ASC
-    LIMIT 10
 )
 SELECT hof.c_name AS hof_player_name, tmate.c_name AS earliest_teammate_name, tyear.earliest_year AS earliest_teammate_year
 FROM hof

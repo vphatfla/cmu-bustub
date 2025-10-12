@@ -2,6 +2,6 @@ INSERT INTO teams (yearID, lgID, teamID, franchID, divID, teamRank, name, attend
 SELECT 
     yearID, lgID, franchID, franchID, divID, teamRank, name, attendance
 FROM teams
-WHERE yearID = 2024
+WHERE yearID = 2024 AND franchID != ''
 ON CONFLICT (yearID, lgID, teamID)
 DO UPDATE SET attendance = -1;
