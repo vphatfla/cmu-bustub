@@ -1,23 +1,22 @@
 WITH player_gold_awards AS (
-    SELECT ap.playerID as playerID, COUNT(DISTINCT ap.yearID) as award_years
-    FROM awardsplayers as ap
-    INNER JOIN leagues as l
+    SELECT ap.playerID AS playerID, COUNT(DISTINCT ap.yearID) AS award_years
+    FROM awardsplayers AS ap
+    INNER JOIN leagues AS l
         ON ap.lgID = l.lgID
     WHERE ap.awardID='Gold Glove' AND ap.yearID > 1999 AND l.active='Y'
     GROUP BY ap.playerID
-),
-team_batting AS (
-    SELECT teamID, yearID, AVG(G_batting) as avg_batting
-    FROM appearances
-    WHERE yearID > 1999
-    GROUP BY teamID, yearID
-),
-pairs AS (
-    SELECT a.playerID, a.teamID
-    FROM appearances AS a
-    INNER JOIN team_batting AS tb 
-        ON a.teamID = tb.teamID AND a.yearID = tb.yearID
-    WHERE a.G_batting > tab.avg_batting
 )
-SElECT p.nameGiven, player_batting.teamID, player_gold_awards.award_years
-FROM 
+SELECT p.nameGiven, a.teamID, pg.award_years AS distinct_years
+FROM appearances AS a
+INNER JOIN player_gold_awards AS pg 
+    ON a.playerID = pg.playerID
+INNER JOIN people AS p
+    ON a.playerID = p.playerID
+WHERE a.yearID > 1999 AND a.G_batting > (
+    SELECT AVG(G_batting)
+    FROM appearances AS a2
+    WHERE a2.teamID = a.teamID AND a2.yearID = a.yearID
+)
+GROUP BY p.nameGiven, a.teamID, pg.award_years
+ORDER BY pg.award_years DESC, p.nameGiven ASC
+LIMIT 10;
