@@ -24,7 +24,9 @@ namespace bustub {
  * @brief a new ArcReplacer, with lists initialized to be empty and target size to 0
  * @param num_frames the maximum number of frames the ArcReplacer will be required to cache
  */
-ArcReplacer::ArcReplacer(size_t num_frames) : replacer_size_(num_frames) {}
+ArcReplacer::ArcReplacer(size_t num_frames) : replacer_size_(num_frames) {
+    mru_target_size_ = 0;
+}
 
 /**
  * TODO(P1): Add implementation
@@ -75,7 +77,31 @@ auto ArcReplacer::Evict() -> std::optional<frame_id_t> { return std::nullopt; }
  * @param access_type type of access that was received. This parameter is only needed for
  * leaderboard tests.
  */
-void ArcReplacer::RecordAccess(frame_id_t frame_id, page_id_t page_id, [[maybe_unused]] AccessType access_type) {}
+void ArcReplacer::RecordAccess(frame_id_t frame_id, page_id_t page_id, [[maybe_unused]] AccessType access_type) {
+    // 1. cache HIT: if page exits in MRU OR MFU
+    // move page to front of MFU
+    
+    
+    // 2. cache MISS: page exists in mru_ghost_
+    // --- IF mru_ghost_.size >= mfu_ghost_.size -> mru_target_size_  += 1
+    // --- ELSE mru_target_size_ = MIN(replacer_size_ OR mru_target_size_ + round_down(mfu_ghost_.size/mru_ghost_.size)
+    // Move page to front of mfu_
+    // Rational: if mru_ is little larger, DBMS could have had a cache hits
+
+
+    // 3. cache MISS: page exists in mfu_ghost_
+    // --- IF mfu_ghost_.size >= mru_ghost_.size -> mru_target_size_ -=1
+    // --- ELSE mru_target_size_ = MAX(0 OR mru_target_size_ - round_down(mru_ghost_.size/mfu_ghost_.size)
+    // Move page to front of mfu_
+    // Rational: if mfu_ is little larger, DBMS could have had a cache hits
+
+
+    // 4. cache MISS, ghost lists MISS
+    // --- IF mru_.size + mru_ghost_.size = replacer_size_ --> kill last in mru_ghost_, then add page to front of mru_
+    // --- ELSE (mru_.size + mru_ghost_.size) < replacer_size_ (ALWAYS) 
+    // ------ IF mru_.size + mru_ghost_.size + mfu_.size + mfu_ghost_.size = 2 * replacer_size_ --> kill last in mfu_ghost_ AND add page to the front of mru_
+    // ------ ELSE --> add page to front of MRU
+}
 
 /**
  * TODO(P1): Add implementation

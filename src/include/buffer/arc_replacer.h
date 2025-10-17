@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <list>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <unordered_map>
 #include "common/config.h"
