@@ -1,34 +1,18 @@
-
-//===----------------------------------------------------------------------===//
-//
-//                         BusTub
-//
-// arc_replacer.h
-//
-// Identification: src/include/buffer/arc_replacer.h
-//
-// Copyright (c) 2015-2025, Carnegie Mellon University Database Group
-//
-//===----------------------------------------------------------------------===//
-
 #pragma once
 
+#include <cstddef>
 #include <list>
 #include <memory>
-#include <mutex>  // NOLINT
 #include <optional>
 #include <unordered_map>
-
 #include "common/config.h"
 #include "common/macros.h"
-
 namespace bustub {
 
 enum class AccessType { Unknown = 0, Lookup, Scan, Index };
 
 enum class ArcStatus { MRU, MFU, MRU_GHOST, MFU_GHOST };
 
-// TODO(student): You can modify or remove this struct as you like.
 struct FrameStatus {
   page_id_t page_id_;
   frame_id_t frame_id_;
@@ -38,53 +22,48 @@ struct FrameStatus {
       : page_id_(pid), frame_id_(fid), evictable_(ev), arc_status_(st) {}
 };
 
-/**
- * ArcReplacer implements the ARC replacement policy.
- */
 class ArcReplacer {
  public:
   explicit ArcReplacer(size_t num_frames);
 
   DISALLOW_COPY_AND_MOVE(ArcReplacer);
 
-  /**
-   * TODO(P1): Add implementation
-   *
-   * @brief Destroys the LRUReplacer.
-   */
   ~ArcReplacer() = default;
 
+  // @brief Evict a frame, if no evictable frames, return std::nullopt
   auto Evict() -> std::optional<frame_id_t>;
+
+  // @brief record page has been accessed at current ts, in given frame
+  // be called after a page has been pinned to a frame
   void RecordAccess(frame_id_t frame_id, page_id_t page_id, AccessType access_type = AccessType::Unknown);
+
+  // @brief Control whether a frame is evictable or not
+  // Also control ArcReplace'size. When the pin count of a page = 0, its corresponding frame must be marked evictable
   void SetEvictable(frame_id_t frame_id, bool set_evictable);
+
+  // @brief Remove a frame and its page from the replaceer if exists and is evictable
+  // Only be called when a page is deleted in the BufferPoolManager
   void Remove(frame_id_t frame_id);
+
+  // @brief Return the number of eictable frames that currently in the ArcReplacer
   auto Size() -> size_t;
 
  private:
-  // TODO(student): implement me! You can replace or remove these member variables as you like.
+  // TODO
   std::list<frame_id_t> mru_;
   std::list<frame_id_t> mfu_;
   std::list<page_id_t> mru_ghost_;
   std::list<page_id_t> mfu_ghost_;
 
-  /* record entries in mru_ and mfu_
-   * this uses frame_id_t to guarantee no duplicate records for the same
-   * frame when they are alive */
+  // record entry in mru_ and mfu_
   std::unordered_map<frame_id_t, std::shared_ptr<FrameStatus>> alive_map_;
-  /* record entries in mru_ghost_ and mfu_ghost_
-   * this uses page_id_t but not frame_id_t because page_id is the unique
-   * identifier in ghost lists */
+  // record entry in mru_ghost_ and mfu_ghost_
   std::unordered_map<page_id_t, std::shared_ptr<FrameStatus>> ghost_map_;
 
-  /* alive, evictable entries count */
-  [[maybe_unused]] size_t curr_size_{0};
-  /* p as in original paper */
-  [[maybe_unused]] size_t mru_target_size_{0};
-  /* c as in original paper */
-  [[maybe_unused]] size_t replacer_size_;
+  size_t curr_size_{0};
+  size_t mru_target_size_{0};
+  size_t replacer_size_;
+
   std::mutex latch_;
-
-  // TODO(student): You can add member variables / functions as you like.
 };
-
 }  // namespace bustub
