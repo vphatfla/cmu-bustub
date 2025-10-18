@@ -19,8 +19,9 @@ struct FrameStatus {
   frame_id_t frame_id_;
   bool evictable_;
   ArcStatus arc_status_;
-  FrameStatus(page_id_t pid, frame_id_t fid, bool ev, ArcStatus st)
-      : page_id_(pid), frame_id_(fid), evictable_(ev), arc_status_(st) {}
+  std::list<frame_id_t>::iterator list_it_;
+  FrameStatus(page_id_t pid, frame_id_t fid, bool ev, ArcStatus st, std::list<frame_id_t>::iterator lit)
+      : page_id_(pid), frame_id_(fid), evictable_(ev), arc_status_(st), list_it_(lit) {}
 };
 
 class ArcReplacer {
@@ -57,6 +58,7 @@ class ArcReplacer {
   std::list<page_id_t> mfu_ghost_;
 
   // record entry in mru_ and mfu_
+  // frame_id_t and page_id_t is one to one mapping when the page_id_t is alive
   std::unordered_map<frame_id_t, std::shared_ptr<FrameStatus>> alive_map_;
   // record entry in mru_ghost_ and mfu_ghost_
   std::unordered_map<page_id_t, std::shared_ptr<FrameStatus>> ghost_map_;
@@ -66,5 +68,8 @@ class ArcReplacer {
   size_t replacer_size_;
 
   std::mutex latch_;
+
+  auto evictFromList(std::list<frame_id_t> list, std::list<page_id_t>, ArcStatus new_arc_status)
+      -> std::optional<frame_id_t>;
 };
 }  // namespace bustub
