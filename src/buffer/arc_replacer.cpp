@@ -85,6 +85,10 @@ auto ArcReplacer::Evict() -> std::optional<frame_id_t> {
       res = evictFromList(mfu_, mfu_ghost_, ArcStatus::MFU_GHOST);
     }
   }
+
+  if (res.has_value()) {
+    curr_size_ -= 1;
+  }
   return res;
 }
 
@@ -168,6 +172,8 @@ void ArcReplacer::RecordAccess(frame_id_t frame_id, page_id_t page_id, [[maybe_u
 
     alive_map_[frame_id] = f_status;
 
+    curr_size_ += 1;
+
     ghost_map_.erase(page_id);
     return;
   }
@@ -194,6 +200,8 @@ void ArcReplacer::RecordAccess(frame_id_t frame_id, page_id_t page_id, [[maybe_u
     mru_.push_front(frame_id);
     auto f_status = FrameStatus(page_id, frame_id, true, ArcStatus::MRU, mru_.begin());
     alive_map_[frame_id] = std::make_shared<FrameStatus>(f_status);
+
+    curr_size_ += 1;
     return;
   }
 
@@ -206,12 +214,16 @@ void ArcReplacer::RecordAccess(frame_id_t frame_id, page_id_t page_id, [[maybe_u
     mru_.push_front(frame_id);
     auto f_status = FrameStatus(page_id, frame_id, true, ArcStatus::MRU, mru_.begin());
     alive_map_[frame_id] = std::make_shared<FrameStatus>(f_status);
+
+    curr_size_ += 1;
     return;
   }
 
   mru_.push_front(frame_id);
   auto f_status = FrameStatus(page_id, frame_id, true, ArcStatus::MRU, mru_.begin());
   alive_map_[frame_id] = std::make_shared<FrameStatus>(f_status);
+
+  curr_size_ += 1;
 }
 
 /**
@@ -237,7 +249,12 @@ void ArcReplacer::SetEvictable(frame_id_t frame_id, bool set_evictable) {
     throw new Exception("No alive frame id found for ", frame_id);
   }
   auto f_status = it->second;
-  f_status->evictable_ = true;
+  if (!set_evictable && f_status->evictable_) {
+    curr_size_ -= 1;
+  } else if (set_evictable && !f_status->evictable_) {
+    curr_size_ += 1;
+  }
+  f_status->evictable_ = set_evictable;
 }
 
 /**
