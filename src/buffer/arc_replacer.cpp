@@ -42,11 +42,12 @@ auto ArcReplacer::evictFromList(std::list<frame_id_t> list, std::list<page_id_t>
       // remove from alive list
       list.erase(f_status->list_it_);
       alive_map_.erase(frame_id);
-      // add to ghost list
+      // add to ghost list and ghost_map_
       ghost_list.push_front(f_status->page_id_);
       f_status->evictable_ = false;
       f_status->arc_status_ = new_arc_status;
       f_status->list_it_ = ghost_list.begin();
+      ghost_map_[f_status->page_id_] = f_status;
       return frame_id;
     }
   }
