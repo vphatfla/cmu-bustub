@@ -32,7 +32,7 @@ namespace bustub {
  */
 ArcReplacer::ArcReplacer(size_t num_frames) : replacer_size_(num_frames) { mru_target_size_ = 0; }
 
-auto ArcReplacer::evictFromList(std::list<frame_id_t> list, std::list<page_id_t> ghost_list, ArcStatus new_arc_status)
+auto ArcReplacer::evictFromList(std::list<frame_id_t> &list, std::list<page_id_t> &ghost_list, ArcStatus new_arc_status)
     -> std::optional<frame_id_t> {
   for (auto it = list.rbegin(); it != list.rend(); ++it) {
     frame_id_t frame_id = *it;
@@ -44,7 +44,7 @@ auto ArcReplacer::evictFromList(std::list<frame_id_t> list, std::list<page_id_t>
       alive_map_.erase(frame_id);
       // add to ghost list and ghost_map_
       ghost_list.push_front(f_status->page_id_);
-      f_status->evictable_ = false;
+      // f_status->evictable_ = false;
       f_status->arc_status_ = new_arc_status;
       f_status->list_it_ = ghost_list.begin();
       ghost_map_[f_status->page_id_] = f_status;
@@ -156,6 +156,7 @@ void ArcReplacer::RecordAccess(frame_id_t frame_id, page_id_t page_id, [[maybe_u
         mru_target_size_ += std::floor(mfu_ghost_.size() / mru_ghost_.size());
       }
       mru_target_size_ = std::min(mru_target_size_, replacer_size_);
+      mru_ghost_.pop_back();
     } else if (f_status->arc_status_ == ArcStatus::MFU_GHOST) {
       // found in mfu_ghost_, decrease mru_target_size_, move to front of mfu_
       if (mfu_ghost_.size() >= mru_ghost_.size()) {
@@ -164,7 +165,9 @@ void ArcReplacer::RecordAccess(frame_id_t frame_id, page_id_t page_id, [[maybe_u
         mru_target_size_ -= std::floor(mru_ghost_.size() / mfu_ghost_.size());
       }
       mru_target_size_ = std::max(mru_target_size_, size_t(0));
+      mfu_ghost_.pop_back();
     }
+    ghost_map_.erase(page_id);
 
     f_status->frame_id_ = frame_id;
     f_status->arc_status_ = ArcStatus::MFU;
@@ -172,10 +175,7 @@ void ArcReplacer::RecordAccess(frame_id_t frame_id, page_id_t page_id, [[maybe_u
     f_status->list_it_ = mfu_.begin();
 
     alive_map_[frame_id] = f_status;
-
     curr_size_ += 1;
-
-    ghost_map_.erase(page_id);
     return;
   }
 
@@ -188,7 +188,7 @@ void ArcReplacer::RecordAccess(frame_id_t frame_id, page_id_t page_id, [[maybe_u
   // 4. cache MISS, ghost lists MISS
   // --- IF mru_.size + mru_ghost_.size = replacer_size_ --> kill last in mru_ghost_, then add page to front of mru_
   // --- ELSE (mru_.size + mru_ghost_.size) < replacer_size_ (ALWAYS)
-  // ------ IF mru_.size + mru_ghost_.size + mfu_.size + mfu_ghost_.size = 2 * replacer_size_ --> kill last in
+  // ------ IF mru_.size + mru_ghost_.size + mfu_.size + mfu_ghost_.size = 2 * replacer_size_ --> kill last ir
   // mfu_ghost_ AND add page to the front of mru_
   // ------ ELSE --> add page to front of MRU
 
@@ -289,6 +289,7 @@ void ArcReplacer::Remove(frame_id_t frame_id) {
       throw new Exception("Alive frame does not have valid ArcStatus, frame ID = ", frame_id);
     }
     alive_map_.erase(frame_id);
+    curr_size_ -= 1;
   }
 }
 

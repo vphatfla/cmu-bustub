@@ -69,7 +69,7 @@ class ArcReplacer {
 
   std::mutex latch_;
 
-  auto evictFromList(std::list<frame_id_t> list, std::list<page_id_t>, ArcStatus new_arc_status)
+  auto evictFromList(std::list<frame_id_t> &list, std::list<page_id_t> &ghost_list, ArcStatus new_arc_status)
       -> std::optional<frame_id_t>;
 };
 }  // namespace bustub
