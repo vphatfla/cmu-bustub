@@ -20,6 +20,8 @@ struct FrameStatus {
   bool evictable_;
   ArcStatus arc_status_;
   std::list<frame_id_t>::iterator list_it_;
+  FrameStatus(page_id_t pid, frame_id_t fid, bool ev, ArcStatus st)
+      : page_id_(pid), frame_id_(fid), evictable_(ev), arc_status_(st) {}
   FrameStatus(page_id_t pid, frame_id_t fid, bool ev, ArcStatus st, std::list<frame_id_t>::iterator lit)
       : page_id_(pid), frame_id_(fid), evictable_(ev), arc_status_(st), list_it_(lit) {}
 };
@@ -51,7 +53,6 @@ class ArcReplacer {
   auto Size() -> size_t;
 
  private:
-  // TODO
   std::list<frame_id_t> mru_;
   std::list<frame_id_t> mfu_;
   std::list<page_id_t> mru_ghost_;
@@ -68,8 +69,12 @@ class ArcReplacer {
   size_t replacer_size_;
 
   std::mutex latch_;
+  std::mutex ghost_latch_;
 
-  auto evictFromList(std::list<frame_id_t> &list, std::list<page_id_t> &ghost_list, ArcStatus new_arc_status)
+  auto EvictFromList(std::list<frame_id_t> &list, std::list<page_id_t> &ghost_list, ArcStatus new_arc_status)
       -> std::optional<frame_id_t>;
+
+  void PushFrontOfList(std::list<frame_id_t> &list, FrameStatus &f_status);
+  void PushFrontOfGhostList(std::list<page_id_t> &ghost_list, FrameStatus &f_status);
 };
 }  // namespace bustub

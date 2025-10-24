@@ -17,15 +17,29 @@
 #include <cstddef>
 #include <list>
 #include <memory>
+#include <mutex>
 #include <optional>
+#include <string>
 #include "common/config.h"
 #include "common/exception.h"
 
 namespace bustub {
 
-ArcReplacer::ArcReplacer(size_t num_frames) : replacer_size_(num_frames) { mru_target_size_ = 0; }
+ArcReplacer::ArcReplacer(size_t num_frames) : replacer_size_(num_frames) { mru_target_size_ = static_cast<size_t>(0); }
 
-auto ArcReplacer::evictFromList(std::list<frame_id_t> &list, std::list<page_id_t> &ghost_list, ArcStatus new_arc_status)
+void ArcReplacer::PushFrontOfList(std::list<frame_id_t> &list, FrameStatus &f_status) {
+  // std::lock_guard<std::mutex> lock(latch_);
+  list.push_front(f_status.frame_id_);
+  f_status.list_it_ = list.begin();
+}
+
+void ArcReplacer::PushFrontOfGhostList(std::list<page_id_t> &ghost_list, FrameStatus &f_status) {
+  // std::lock_guard<std::mutex> lock(ghost_latch_);
+  ghost_list.push_front(f_status.page_id_);
+  f_status.list_it_ = ghost_list.begin();
+}
+
+auto ArcReplacer::EvictFromList(std::list<frame_id_t> &list, std::list<page_id_t> &ghost_list, ArcStatus new_arc_status)
     -> std::optional<frame_id_t> {
   for (auto it = list.rbegin(); it != list.rend(); ++it) {
     frame_id_t frame_id = *it;
@@ -35,11 +49,8 @@ auto ArcReplacer::evictFromList(std::list<frame_id_t> &list, std::list<page_id_t
       // remove from alive list
       list.erase(f_status->list_it_);
       alive_map_.erase(frame_id);
-      // add to ghost list and ghost_map_
-      ghost_list.push_front(f_status->page_id_);
-      // f_status->evictable_ = false;
+      PushFrontOfGhostList(ghost_list, *f_status);
       f_status->arc_status_ = new_arc_status;
-      f_status->list_it_ = ghost_list.begin();
       ghost_map_[f_status->page_id_] = f_status;
       return frame_id;
     }
@@ -50,16 +61,17 @@ auto ArcReplacer::evictFromList(std::list<frame_id_t> &list, std::list<page_id_t
 auto ArcReplacer::Evict() -> std::optional<frame_id_t> {
   // If mru_.size < target, evict from mfu_, if can't evict from mru_
   // else, evict from mru_, if can't evict from mfu_
+  std::lock_guard<std::mutex> lock(latch_);
   std::optional<frame_id_t> res;
   if (mru_.size() < mru_target_size_) {
-    res = evictFromList(mfu_, mfu_ghost_, ArcStatus::MFU_GHOST);
+    res = EvictFromList(mfu_, mfu_ghost_, ArcStatus::MFU_GHOST);
     if (!res.has_value()) {
-      res = evictFromList(mru_, mru_ghost_, ArcStatus::MRU_GHOST);
+      res = EvictFromList(mru_, mru_ghost_, ArcStatus::MRU_GHOST);
     }
   } else {
-    res = evictFromList(mru_, mru_ghost_, ArcStatus::MRU_GHOST);
+    res = EvictFromList(mru_, mru_ghost_, ArcStatus::MRU_GHOST);
     if (!res.has_value()) {
-      res = evictFromList(mfu_, mfu_ghost_, ArcStatus::MFU_GHOST);
+      res = EvictFromList(mfu_, mfu_ghost_, ArcStatus::MFU_GHOST);
     }
   }
 
@@ -70,6 +82,7 @@ auto ArcReplacer::Evict() -> std::optional<frame_id_t> {
 }
 
 void ArcReplacer::RecordAccess(frame_id_t frame_id, page_id_t page_id, [[maybe_unused]] AccessType access_type) {
+  std::lock_guard<std::mutex> lock(latch_);
   // 1. cache HIT: if page exits in MRU OR MFU
   // move page to front of MFU
   // rational: page is accessed again, then move to front of mfu_ to get the protection
@@ -78,12 +91,10 @@ void ArcReplacer::RecordAccess(frame_id_t frame_id, page_id_t page_id, [[maybe_u
     if (f_status->arc_status_ == ArcStatus::MRU) {
       // found in mru_, move to mfu_ and remove from mru_
       auto list_it = f_status->list_it_;
-
-      mfu_.push_front(frame_id);
-      f_status->arc_status_ = ArcStatus::MFU;
-      f_status->list_it_ = mfu_.begin();
-
       mru_.erase(list_it);
+
+      PushFrontOfList(mfu_, *f_status);
+      f_status->arc_status_ = ArcStatus::MFU;
     }
     return;
   }
@@ -111,15 +122,14 @@ void ArcReplacer::RecordAccess(frame_id_t frame_id, page_id_t page_id, [[maybe_u
       } else {
         mru_target_size_ -= std::floor(mru_ghost_.size() / mfu_ghost_.size());
       }
-      mru_target_size_ = std::max(mru_target_size_, size_t(0));
+      mru_target_size_ = std::max(mru_target_size_, static_cast<size_t>(0));
       mfu_ghost_.pop_back();
     }
     ghost_map_.erase(page_id);
 
     f_status->frame_id_ = frame_id;
+    PushFrontOfList(mfu_, *f_status);
     f_status->arc_status_ = ArcStatus::MFU;
-    mfu_.push_front(frame_id);
-    f_status->list_it_ = mfu_.begin();
 
     alive_map_[frame_id] = f_status;
     curr_size_ += 1;
@@ -144,40 +154,25 @@ void ArcReplacer::RecordAccess(frame_id_t frame_id, page_id_t page_id, [[maybe_u
     auto ghost_page_id = mru_ghost_.back();
     ghost_map_.erase(ghost_page_id);
     mru_ghost_.pop_back();
-
-    mru_.push_front(frame_id);
-    auto f_status = FrameStatus(page_id, frame_id, true, ArcStatus::MRU, mru_.begin());
-    alive_map_[frame_id] = std::make_shared<FrameStatus>(f_status);
-
-    curr_size_ += 1;
-    return;
-  }
-
-  if (mru_.size() + mru_ghost_.size() + mfu_.size() + mfu_ghost_.size() == 2 * replacer_size_) {
+  } else if (mru_.size() + mru_ghost_.size() + mfu_.size() + mfu_ghost_.size() == 2 * replacer_size_) {
     // kill last in mfu_ghost_, then add page to the front of mru_
     auto ghost_page_id = mfu_ghost_.back();
     ghost_map_.erase(ghost_page_id);
     mfu_ghost_.pop_back();
-
-    mru_.push_front(frame_id);
-    auto f_status = FrameStatus(page_id, frame_id, true, ArcStatus::MRU, mru_.begin());
-    alive_map_[frame_id] = std::make_shared<FrameStatus>(f_status);
-
-    curr_size_ += 1;
-    return;
   }
 
-  mru_.push_front(frame_id);
-  auto f_status = FrameStatus(page_id, frame_id, true, ArcStatus::MRU, mru_.begin());
-  alive_map_[frame_id] = std::make_shared<FrameStatus>(f_status);
+  auto f_status = FrameStatus(page_id, frame_id, true, ArcStatus::MRU);
+  PushFrontOfList(mru_, f_status);
 
+  alive_map_[frame_id] = std::make_shared<FrameStatus>(f_status);
   curr_size_ += 1;
 }
 
 void ArcReplacer::SetEvictable(frame_id_t frame_id, bool set_evictable) {
+  std::lock_guard<std::mutex> lock(latch_);
   auto it = alive_map_.find(frame_id);
   if (it == alive_map_.end()) {
-    throw new Exception("No alive frame id found for ", frame_id);
+    throw new Exception("No alive frame id found for {}");
   }
   auto f_status = it->second;
   if (!set_evictable && f_status->evictable_) {
@@ -189,10 +184,11 @@ void ArcReplacer::SetEvictable(frame_id_t frame_id, bool set_evictable) {
 }
 
 void ArcReplacer::Remove(frame_id_t frame_id) {
+  std::lock_guard<std::mutex> lock(latch_);
   if (auto it = alive_map_.find(frame_id); it != alive_map_.end()) {
     auto f_status = it->second;
     if (!f_status->evictable_) {
-      throw new Exception("Frame can not be evicted, frame_id = ", frame_id);
+      throw new Exception("Frame can not be evicted, frame_id = {}");
       return;
     }
     if (f_status->arc_status_ == ArcStatus::MRU) {
@@ -200,7 +196,7 @@ void ArcReplacer::Remove(frame_id_t frame_id) {
     } else if (f_status->arc_status_ == ArcStatus::MFU) {
       mfu_.erase(f_status->list_it_);
     } else {
-      throw new Exception("Alive frame does not have valid ArcStatus, frame ID = ", frame_id);
+      throw new Exception("Alive frame does not have valid ArcStatus, frame ID = {}");
     }
     alive_map_.erase(frame_id);
     curr_size_ -= 1;
