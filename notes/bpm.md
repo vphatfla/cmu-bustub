@@ -79,11 +79,47 @@ std::optional<std::thread> background_thread_; // responsible for issuing schedu
 ## ArcReplacer:
 
 ```
-TODO
+
+```
+
+```
+FrameStatus {
+    page_id_;
+    frame_id_;
+    evictable_;
+    ArcStatus arc_status_; (MRU, MFU, MRU_GHOST, MFU_GHOST)
+}
+
+ArcReplacer {
+    DISALLOW_COPY_AND_MOVE
+
+    private:
+        mru_, mfu_, mru_ghost_, mfu_ghost_;
+        alive_map_, ghost_map_;
+}
 ```
 
 ## DiskManager:
 
+- Takes care of allocation and deallocation of pages within database
+- Performs reading and writing of pages to and from disk, providing logical file layer
+- Use lazy allocation, it only allocates space on disk when it is first acessed.
+- Maintain a mapping of `page_id` to their corresponding offsets in the db file.
+
 ```
-TODO
+public:
+    virtual void WritePage(page_id_t page_id, const char *page_data);
+    virtual void ReadPage(page_id_t page_id, char *page_data);
+
+private:
+    std::fstream log_io_;
+    std::filesystem::path log_file_name_;
+
+    std::fstream db_io_;
+    std::filesystem:: path db_file_name;
+
+    std::unordered_map<page_id_t, size_t> pages; // page_id and offset mapping
+    std::vector<size_t> free_slots_;
+
+    std::mutex db_io_latch_; // protect file access
 ```
