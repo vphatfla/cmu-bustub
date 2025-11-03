@@ -14,6 +14,7 @@
 
 #include <list>
 #include <memory>
+#include <optional>
 #include <shared_mutex>
 #include <unordered_map>
 #include <vector>
@@ -81,6 +82,7 @@ class FrameHeader {
   /** @brief The dirty flag. */
   bool is_dirty_;
 
+  std::optional<page_id_t> page_id_;
   /**
    * @brief A pointer to the data of the page that this frame holds.
    *
@@ -162,7 +164,7 @@ class BufferPoolManager {
    */
   LogManager *log_manager_ __attribute__((__unused__));
 
-  /**
+  /*
    * TODO(P1): You may add additional private members and helper functions if you find them necessary.
    *
    * There will likely be a lot of code duplication between the different modes of accessing a page.
@@ -171,5 +173,12 @@ class BufferPoolManager {
    * stored inside of it. Additionally, you may also want to implement a helper function that returns either a shared
    * pointer to a `FrameHeader` that already has a page's data stored inside of it, or an index to said `FrameHeader`.
    */
+
+  // @brief return a ID of frame that is free and has nothing in it
+  auto getFreeFrameID() -> std::optional<frame_id_t>;
+
+  // @brief return a shared pointer to a frameheader that already has a page's data stored inside of it
+  auto getFrameHeaderByID(frame_id_t fid) -> std::shared_ptr<FrameHeader>;
+
 };
 }  // namespace bustub
