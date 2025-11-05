@@ -180,5 +180,7 @@ class BufferPoolManager {
   // @brief return a shared pointer to a frameheader that already has a page's data stored inside of it
   auto getFrameHeaderByID(frame_id_t fid) -> std::shared_ptr<FrameHeader>;
 
+  // @brief helper function that schedule a I/O request on a page_id and wait until it finishes
+  auto scheduleIO(const bool &is_write, char *data, const page_id_t &page_id) -> bool;
 };
 }  // namespace bustub

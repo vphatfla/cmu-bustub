@@ -11,10 +11,14 @@
 //===----------------------------------------------------------------------===//
 
 #include "buffer/buffer_pool_manager.h"
+#include <future>
+#include <iostream>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <ostream>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 #include "buffer/arc_replacer.h"
 #include "common/config.h"
@@ -125,9 +129,8 @@ auto BufferPoolManager::Size() const -> size_t { return num_frames_; }
  * @return The page ID of the newly allocated page.
  */
 auto BufferPoolManager::NewPage() -> page_id_t {
-    // UNIMPLEMENTED("TODO(P1): Add implementation.");
-    return next_page_id_ ++;
-
+  // UNIMPLEMENTED("TODO(P1): Add implementation.");
+  return next_page_id_++;
 }
 
 /**
@@ -149,7 +152,10 @@ auto BufferPoolManager::NewPage() -> page_id_t {
  * @param page_id The page ID of the page we want to delete.
  * @return `false` if the page exists but could not be deleted, `true` if the page didn't exist or deletion succeeded.
  */
-auto BufferPoolManager::DeletePage(page_id_t page_id) -> bool { UNIMPLEMENTED("TODO(P1): Add implementation."); }
+auto BufferPoolManager::DeletePage(page_id_t page_id) -> bool {
+  // UNIMPLEMENTED("TODO(P1): Add implementation.");
+  return false;
+}
 
 /**
  * @brief Acquires an optional write-locked guard over a page of data. The user can specify an `AccessType` if needed.
@@ -192,7 +198,7 @@ auto BufferPoolManager::DeletePage(page_id_t page_id) -> bool { UNIMPLEMENTED("T
  */
 auto BufferPoolManager::CheckedWritePage(page_id_t page_id, AccessType access_type) -> std::optional<WritePageGuard> {
   // UNIMPLEMENTED("TODO(P1): Add implementation.");
-
+  std::lock_guard<std::mutex> lock(*bpm_latch_);
   // 1: cache HITs - page_id exists in the page table
   // 2: get frame_id from page_table_
   // 3: get frame_header from frame_id
@@ -204,7 +210,86 @@ auto BufferPoolManager::CheckedWritePage(page_id_t page_id, AccessType access_ty
   //        arcreplacer set NOT evictable
   //        arcrepplacer record access
   // 5: return new WritePageGuard
+  if (auto it = page_table_.find(page_id); it != page_table_.end()) {
+    // cache HIT
+    auto frame_header = getFrameHeaderByID(it->second);
+    if (frame_header->pin_count_ > 0) {
+      // other threads (guard) is referring to this frame, can not grant exclusive write access
+      return std::nullopt;
+    }
+    if (frame_header->is_dirty_) {
+      if (!FlushPageUnsafe(page_id)) {
+        std::cout << "ERROR flushing page " << page_id << std::endl;
+        return std::nullopt;
+      }
 
+      frame_header->pin_count_ = 1;
+      frame_header->is_dirty_ = true;
+
+      replacer_->SetEvictable(frame_header->frame_id_, false);
+      replacer_->RecordAccess(frame_header->frame_id_, page_id);
+
+      return WritePageGuard(page_id, frame_header, replacer_, bpm_latch_, disk_scheduler_);
+    } else {
+      auto free_frame_id = getFreeFrameID();
+      if (free_frame_id.has_value()) {
+        // available free frame
+        auto free_frame = getFrameHeaderByID(free_frame_id.value());
+        if (!scheduleIO(false, free_frame->GetDataMut(), page_id)) {
+          throw std::runtime_error("I/O READ for page_id failed");
+          return std::nullopt;
+        }
+
+        frame_header->page_id_ = page_id;
+        frame_header->pin_count_ = 1;
+        frame_header->is_dirty_ = true;
+        frame_header->page_id_ = std::make_optional(page_id);
+
+        replacer_->RecordAccess(frame_header->frame_id_, page_id);
+        replacer_->SetEvictable(frame_header->frame_id_, false);
+
+        page_table_.insert({page_id, frame_header->frame_id_});
+
+        return WritePageGuard(page_id, frame_header, replacer_, bpm_latch_, disk_scheduler_);
+      } else {
+        // no available free frame
+        auto evicted_frame_id = replacer_->Evict();
+        if (!evicted_frame_id.has_value()) {
+          // no available free frame to evict
+          return std::nullopt;
+        }
+        auto evicted_frame = getFrameHeaderByID(evicted_frame_id.value());
+        if (evicted_frame->pin_count_ != 0) {
+          throw std::runtime_error("evicted a frame is invalid since its pin count is not 0");
+        }
+        auto victim_page_id = frame_header->page_id_;
+        if (!victim_page_id.has_value()) {
+          throw std::runtime_error("page_id is NOT SET in the evicted frame");
+        }
+
+        if (evicted_frame->is_dirty_ && !FlushPageUnsafe(victim_page_id.value())) {
+          throw std::runtime_error("failed to flush a page of evicted frame");
+        }
+
+        page_table_.erase(victim_page_id.value());
+
+        if (!scheduleIO(false, frame_header->GetDataMut(), page_id)) {
+          throw std::runtime_error("failed to schedule IO READ ");
+        }
+
+        frame_header->page_id_ = std::make_optional(page_id);
+        frame_header->pin_count_ = 1;
+        frame_header->is_dirty_ = true;
+
+        replacer_->RecordAccess(frame_header->frame_id_, frame_header->page_id_.value());
+        replacer_->SetEvictable(frame_header->frame_id_, false);
+
+        page_table_.insert({frame_header->frame_id_, frame_header->page_id_.value()});
+
+        return WritePageGuard(page_id, frame_header, replacer_, bpm_latch_, disk_scheduler_);
+      }
+    }
+  }
 
   // 2: cache MISS - page_id do not exists, available free frame
   // ----
@@ -232,7 +317,9 @@ auto BufferPoolManager::CheckedWritePage(page_id_t page_id, AccessType access_ty
   // 8. arc_replacer recordAccess and make evictable false
   // 9. page_table_ new mapping <page_id, frame_id>
   // 10. create and return WritePageGuard
-}
+  //
+  return std::nullopt;
+};
 
 /**
  * @brief Acquires an optional read-locked guard over a page of data. The user can specify an `AccessType` if needed.
@@ -260,54 +347,9 @@ auto BufferPoolManager::CheckedWritePage(page_id_t page_id, AccessType access_ty
  */
 auto BufferPoolManager::CheckedReadPage(page_id_t page_id, AccessType access_type) -> std::optional<ReadPageGuard> {
   // UNIMPLEMENTED("TODO(P1): Add implementation.");
-    std::lock_guard<std::mutex> guard(*bpm_latch_);
-    if ( auto it= page_table_.find(page_id); it != page_table_.end() ) {
-        // cache hit, page exist in page table
-        auto fhd = getFrameHeaderByID(it->second);
-       // update arcreplacer
-       replacer_->RecordAccess(fhd->frame_id_, page_id, AccessType::Unknown);
-       // construct ReadPageGuard
-       return std::make_optional(ReadPageGuard(page_id, fhd, replacer_, bpm_latch_, disk_scheduler_));
 
-    } else {
-        // cache missed
-        auto free_FID = getFreeFrameID();
-        if (!free_FID.has_value()) {
-            // no free frame, needs to call evict on arc_replacer
-            if (auto fid = replacer_->Evict(); fid.has_value()) {
-                    auto fhd = getFrameHeaderByID(fid.value());
-                    // check if fhd is dirty
-                    if (fhd->is_dirty_) {
-                        // TODO
-                        // need to flush to disk
-                    }
-                    auto page_id_OLD = fhd->page_id_;
-                    if (!page_id_OLD.has_value()) {
-                        throw std::runtime_error("Invalid value of page_id_ in valid frameheader");
-                    }
-                    // update page table
-                    page_table_.erase(page_id_OLD.value());
-
-                    // update the frameheader
-                    fhd->page_id_ = page_id;
-                    fhd->pin_count_ = 1;
-
-                    // schedule the read with DiskScheduler
-                    char *data;
-                    DiskRequest read_request = DiskRequest{.is_write_ = false, .data_=data, .page_id_ = page_id,
-                    disk_scheduler_->Schedule(std::vector<DiskRequest>());
-            } else {
-                throw std::runtime_error("Not able to evict any page");
-            }
-        } else {
-            // cache missed, there is a free frame
-            // TODO: schedule READ to bring data
-            // return the READ PAGE GUARD
-        }
-    }
-    return std::nullopt;
-
-}
+  return std::nullopt;
+};
 
 /**
  * @brief A wrapper around `CheckedWritePage` that unwraps the inner value if it exists.
@@ -378,7 +420,22 @@ auto BufferPoolManager::ReadPage(page_id_t page_id, AccessType access_type) -> R
  * @param page_id The page ID of the page to be flushed.
  * @return `false` if the page could not be found in the page table; otherwise, `true`.
  */
-auto BufferPoolManager::FlushPageUnsafe(page_id_t page_id) -> bool { UNIMPLEMENTED("TODO(P1): Add implementation."); }
+auto BufferPoolManager::FlushPageUnsafe(page_id_t page_id) -> bool {
+  // UNIMPLEMENTED("TODO(P1): Add implementation.");
+  //  called by CheckedReadPage and CheckedWritePage
+  auto it = page_table_.find(page_id);
+  if (it == page_table_.end()) {
+    return false;
+  }
+  auto frame_header = getFrameHeaderByID(it->second);
+  std::promise<bool> promise;
+  std::future<bool> future = promise.get_future();
+  auto flush_disk_request = DiskRequest{
+      .is_write_ = true, .data_ = frame_header->GetDataMut(), .page_id_ = page_id, .callback_ = std::move(promise)};
+  auto requests = std::vector<DiskRequest>{std::move(flush_disk_request)};
+  disk_scheduler_->Schedule(requests);
+  return future.get();
+}
 
 /**
  * @brief Flushes a page's data out to disk safely.
@@ -458,22 +515,30 @@ auto BufferPoolManager::GetPinCount(page_id_t page_id) -> std::optional<size_t> 
 }
 
 auto BufferPoolManager::getFreeFrameID() -> std::optional<frame_id_t> {
-    std::lock_guard<std::mutex> guard(*bpm_latch_);
-    if (free_frames_.empty()) {
-        return std::nullopt;
-    }
+  if (free_frames_.empty()) {
+    return std::nullopt;
+  }
 
-    auto res = free_frames_.back();
-    free_frames_.pop_back();
-    return res;
+  auto res = free_frames_.back();
+  free_frames_.pop_back();
+  return res;
 }
 
 auto BufferPoolManager::getFrameHeaderByID(frame_id_t fid) -> std::shared_ptr<FrameHeader> {
-    for (auto f: frames_) {
-        if (f->frame_id_ == fid) {
-            return f;
-        }
+  for (auto f : frames_) {
+    if (f->frame_id_ == fid) {
+      return f;
     }
-    throw std::runtime_error("FrameHeader not found " + std::to_string(fid));
+  }
+  throw std::runtime_error("FrameHeader not found " + std::to_string(fid));
+}
+
+auto BufferPoolManager::scheduleIO(const bool &is_write, char *data, const page_id_t &page_id) -> bool {
+  std::promise<bool> promise;
+  std::future<bool> future = promise.get_future();
+  auto request =
+      DiskRequest{.is_write_ = is_write, .data_ = data, .page_id_ = page_id, .callback_ = std::move(promise)};
+  auto requests = std::vector<DiskRequest>{std::move(request)};
+  return future.get();
 }
 }  // namespace bustub
