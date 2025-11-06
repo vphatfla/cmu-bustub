@@ -196,20 +196,48 @@ auto BufferPoolManager::DeletePage(page_id_t page_id) -> bool {
  * @return std::optional<WritePageGuard> An optional latch guard where if there are no more free frames (out of memory)
  * returns `std::nullopt`; otherwise, returns a `WritePageGuard` ensuring exclusive and mutable access to a page's data.
  */
+// 1: cache HITs - page_id exists in the page table
+// 2: get frame_id from page_table_
+// 3: get frame_header from frame_id
+// 4: check the pin_count_ of the frame_header
+//    4.1: pin_count > 0 -> return std::nullopt since can't grant the exclusive write guard
+//    4.2: pin_count = 0 -> Good
+//        pint_coun += 1
+//        is_ditry = true
+//        arcreplacer set NOT evictable
+//        arcrepplacer record access
+// 5: return new WritePageGuard
+
+// 2: cache MISS - page_id do not exists, available free frame
+// ----
+// 1: page_id NOT found in page_table_, there are free_frames_, get 1 free_frames, get the data_ ptr of that frames
+// 2: schedule a diskread: READ
+//    2.1: is_write=false, data_ = ^ above data ptr, page_id_ given,
+//    2.2: wait for the promise
+// 3: modify the free frameheader
+//    3.1: update: page_id_, pint_count = 1, is_dirty = true
+// 4: arc_replacer:
+//    4.1 recordAccess()
+//    4.2 setEvictable(false)
+// 5: update page_table with pair <page_id, frame_id>
+// 6: create writePageGuard object
+
+// 3: cache MISS - page_id do not exists, no available free frame
+// ---
+// 1. page NOT found in page_table_, no available free frames
+// 2. arc_replacer call evict -> opt<frame_id>, if no frame_id -> return std::nullopt
+// 3. check: ASSERT(pin_count, 0), and if is_ditry is TRUE, schedule a WRITE
+// 4. page_table_: get the old_page_id, erase from page_table_
+// 5. schedule READ request for the page_id_ and raw_ptr of the frame_header_ data
+// 6. wait for READ promise to complete
+// 7. update frame_header info: page_id, pint_count =1, is_dirty = TRUE
+// 8. arc_replacer recordAccess and make evictable false
+// 9. page_table_ new mapping <page_id, frame_id>
+// 10. create and return WritePageGuard
+
 auto BufferPoolManager::CheckedWritePage(page_id_t page_id, AccessType access_type) -> std::optional<WritePageGuard> {
   // UNIMPLEMENTED("TODO(P1): Add implementation.");
   std::lock_guard<std::mutex> lock(*bpm_latch_);
-  // 1: cache HITs - page_id exists in the page table
-  // 2: get frame_id from page_table_
-  // 3: get frame_header from frame_id
-  // 4: check the pin_count_ of the frame_header
-  //    4.1: pin_count > 0 -> return std::nullopt since can't grant the exclusive write guard
-  //    4.2: pin_count = 0 -> Good
-  //        pint_coun += 1
-  //        is_ditry = true
-  //        arcreplacer set NOT evictable
-  //        arcrepplacer record access
-  // 5: return new WritePageGuard
   if (auto it = page_table_.find(page_id); it != page_table_.end()) {
     // cache HIT
     auto frame_header = getFrameHeaderByID(it->second);
@@ -222,101 +250,75 @@ auto BufferPoolManager::CheckedWritePage(page_id_t page_id, AccessType access_ty
         std::cout << "ERROR flushing page " << page_id << std::endl;
         return std::nullopt;
       }
+    }
+    frame_header->pin_count_ = 1;
+    frame_header->is_dirty_ = true;
 
-      frame_header->pin_count_ = 1;
-      frame_header->is_dirty_ = true;
+    replacer_->SetEvictable(frame_header->frame_id_, false);
+    replacer_->RecordAccess(frame_header->frame_id_, page_id);
 
-      replacer_->SetEvictable(frame_header->frame_id_, false);
-      replacer_->RecordAccess(frame_header->frame_id_, page_id);
-
-      return WritePageGuard(page_id, frame_header, replacer_, bpm_latch_, disk_scheduler_);
-    } else {
-      auto free_frame_id = getFreeFrameID();
-      if (free_frame_id.has_value()) {
-        // available free frame
-        auto free_frame = getFrameHeaderByID(free_frame_id.value());
-        if (!scheduleIO(false, free_frame->GetDataMut(), page_id)) {
-          throw std::runtime_error("I/O READ for page_id failed");
-          return std::nullopt;
-        }
-
-        frame_header->page_id_ = page_id;
-        frame_header->pin_count_ = 1;
-        frame_header->is_dirty_ = true;
-        frame_header->page_id_ = std::make_optional(page_id);
-
-        replacer_->RecordAccess(frame_header->frame_id_, page_id);
-        replacer_->SetEvictable(frame_header->frame_id_, false);
-
-        page_table_.insert({page_id, frame_header->frame_id_});
-
-        return WritePageGuard(page_id, frame_header, replacer_, bpm_latch_, disk_scheduler_);
-      } else {
-        // no available free frame
-        auto evicted_frame_id = replacer_->Evict();
-        if (!evicted_frame_id.has_value()) {
-          // no available free frame to evict
-          return std::nullopt;
-        }
-        auto evicted_frame = getFrameHeaderByID(evicted_frame_id.value());
-        if (evicted_frame->pin_count_ != 0) {
-          throw std::runtime_error("evicted a frame is invalid since its pin count is not 0");
-        }
-        auto victim_page_id = frame_header->page_id_;
-        if (!victim_page_id.has_value()) {
-          throw std::runtime_error("page_id is NOT SET in the evicted frame");
-        }
-
-        if (evicted_frame->is_dirty_ && !FlushPageUnsafe(victim_page_id.value())) {
-          throw std::runtime_error("failed to flush a page of evicted frame");
-        }
-
-        page_table_.erase(victim_page_id.value());
-
-        if (!scheduleIO(false, frame_header->GetDataMut(), page_id)) {
-          throw std::runtime_error("failed to schedule IO READ ");
-        }
-
-        frame_header->page_id_ = std::make_optional(page_id);
-        frame_header->pin_count_ = 1;
-        frame_header->is_dirty_ = true;
-
-        replacer_->RecordAccess(frame_header->frame_id_, frame_header->page_id_.value());
-        replacer_->SetEvictable(frame_header->frame_id_, false);
-
-        page_table_.insert({frame_header->frame_id_, frame_header->page_id_.value()});
-
-        return WritePageGuard(page_id, frame_header, replacer_, bpm_latch_, disk_scheduler_);
+    return WritePageGuard(page_id, frame_header, replacer_, bpm_latch_, disk_scheduler_);
+  } else {
+    // cache MISSED
+    auto free_frame_id = getFreeFrameID();
+    if (free_frame_id.has_value()) {
+      // available free frame
+      auto free_frame = getFrameHeaderByID(free_frame_id.value());
+      if (!scheduleIO(false, free_frame->GetDataMut(), page_id)) {
+        throw std::runtime_error("I/O READ for page_id failed");
+        return std::nullopt;
       }
+
+      free_frame->page_id_ = page_id;
+      free_frame->pin_count_ = 1;
+      free_frame->is_dirty_ = true;
+      free_frame->page_id_ = std::make_optional(page_id);
+
+      replacer_->RecordAccess(free_frame->frame_id_, page_id);
+      replacer_->SetEvictable(free_frame->frame_id_, false);
+
+      page_table_.insert({page_id, free_frame->frame_id_});
+
+      return WritePageGuard(page_id, free_frame, replacer_, bpm_latch_, disk_scheduler_);
+    } else {
+      // no available free frame
+      auto evicted_frame_id = replacer_->Evict();
+      if (!evicted_frame_id.has_value()) {
+        // no available free frame to evict
+        return std::nullopt;
+      }
+      auto evicted_frame = getFrameHeaderByID(evicted_frame_id.value());
+      if (evicted_frame->pin_count_ != 0) {
+        throw std::runtime_error("evicted a frame is invalid since its pin count is not 0");
+      }
+      auto victim_page_id = evicted_frame->page_id_;
+      if (!victim_page_id.has_value()) {
+        throw std::runtime_error("page_id is NOT SET in the evicted frame");
+      }
+
+      if (evicted_frame->is_dirty_ && !FlushPageUnsafe(victim_page_id.value())) {
+        throw std::runtime_error("failed to flush a page of evicted frame");
+      }
+
+      page_table_.erase(victim_page_id.value());
+
+      if (!scheduleIO(false, evicted_frame->GetDataMut(), page_id)) {
+        throw std::runtime_error("failed to schedule IO READ ");
+      }
+
+      evicted_frame->page_id_ = std::make_optional(page_id);
+      evicted_frame->pin_count_ = 1;
+      evicted_frame->is_dirty_ = true;
+
+      replacer_->RecordAccess(evicted_frame->frame_id_, evicted_frame->page_id_.value());
+      replacer_->SetEvictable(evicted_frame->frame_id_, false);
+
+      page_table_.insert({evicted_frame->page_id_.value(), evicted_frame->frame_id_});
+
+      return WritePageGuard(page_id, evicted_frame, replacer_, bpm_latch_, disk_scheduler_);
     }
   }
 
-  // 2: cache MISS - page_id do not exists, available free frame
-  // ----
-  // 1: page_id NOT found in page_table_, there are free_frames_, get 1 free_frames, get the data_ ptr of that frames
-  // 2: schedule a diskread: READ
-  //    2.1: is_write=false, data_ = ^ above data ptr, page_id_ given,
-  //    2.2: wait for the promise
-  // 3: modify the free frameheader
-  //    3.1: update: page_id_, pint_count = 1, is_dirty = true
-  // 4: arc_replacer:
-  //    4.1 recordAccess()
-  //    4.2 setEvictable(false)
-  // 5: update page_table with pair <page_id, frame_id>
-  // 6: create writePageGuard object
-
-  // 3: cache MISS - page_id do not exists, no available free frame
-  // ---
-  // 1. page NOT found in page_table_, no available free frames
-  // 2. arc_replacer call evict -> opt<frame_id>, if no frame_id -> return std::nullopt
-  // 3. check: ASSERT(pin_count, 0), and if is_ditry is TRUE, schedule a WRITE
-  // 4. page_table_: get the old_page_id, erase from page_table_
-  // 5. schedule READ request for the page_id_ and raw_ptr of the frame_header_ data
-  // 6. wait for READ promise to complete
-  // 7. update frame_header info: page_id, pint_count =1, is_dirty = TRUE
-  // 8. arc_replacer recordAccess and make evictable false
-  // 9. page_table_ new mapping <page_id, frame_id>
-  // 10. create and return WritePageGuard
   //
   return std::nullopt;
 };
