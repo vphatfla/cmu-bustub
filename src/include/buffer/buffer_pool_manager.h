@@ -90,6 +90,8 @@ class FrameHeader {
    */
   std::vector<char> data_;
 
+  // @brief is this frame hold by a WRITEPAGEGUARD
+  bool is_write_;
   /**
    * TODO(P1): You may add any fields or helper functions under here that you think are necessary.
    *
