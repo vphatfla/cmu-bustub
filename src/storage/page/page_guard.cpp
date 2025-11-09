@@ -149,7 +149,8 @@ void ReadPageGuard::Flush() {
       .page_id_ = page_id_,
       .callback_ = std::move(p),
   };
-  auto requests = std::vector<DiskRequest>{std::move(request)};
+  std::vector<DiskRequest> requests;
+  requests.emplace_back(std::move(request));
   disk_scheduler_->Schedule(requests);
   try {
     bool res = f.get();
@@ -326,7 +327,8 @@ void WritePageGuard::Flush() {
       .page_id_ = page_id_,
       .callback_ = std::move(p),
   };
-  auto requests = std::vector<DiskRequest>{std::move(request)};
+  std::vector<DiskRequest> requests;
+  requests.emplace_back(std::move(request));
   disk_scheduler_->Schedule(requests);
   try {
     bool res = f.get();

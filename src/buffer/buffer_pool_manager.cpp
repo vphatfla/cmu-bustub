@@ -668,7 +668,8 @@ void BufferPoolManager::scheduleIO(const bool &is_write, char *data, const page_
   std::future<bool> future = promise.get_future();
   auto request =
       DiskRequest{.is_write_ = is_write, .data_ = data, .page_id_ = page_id, .callback_ = std::move(promise)};
-  auto requests = std::vector<DiskRequest>{std::move(request)};
+  auto requests = std::vector<DiskRequest>{};
+  requests.emplace_back(std::move(request));
   disk_scheduler_->Schedule(requests);
   auto res = future.get();
 
