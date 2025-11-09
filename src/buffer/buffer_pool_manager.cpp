@@ -50,7 +50,10 @@ auto FrameHeader::GetData() const -> const char * { return data_.data(); }
  *
  * @return char* A pointer to mutable data that the frame stores.
  */
-auto FrameHeader::GetDataMut() -> char * { return data_.data(); }
+auto FrameHeader::GetDataMut() -> char * {
+  is_dirty_ = true;  // return raw ptr that can be mutable, then set is_dirty =  true
+  return data_.data();
+}
 
 /**
  * @brief Resets a `FrameHeader`'s member fields.
@@ -250,12 +253,13 @@ auto BufferPoolManager::CheckedWritePage(page_id_t page_id, AccessType access_ty
       }
     }
 
-    frame_header->pin_count_ = 1;
+    /* frame_header->pin_count_ = 1;
     frame_header->is_dirty_ = true;
     frame_header->is_write_ = true;
     replacer_->SetEvictable(frame_header->frame_id_, false);
-    replacer_->RecordAccess(frame_header->frame_id_, page_id);
+    replacer_->RecordAccess(frame_header->frame_id_, page_id); */
 
+    // constructor of writepageguard should correctly set the field and call repalcer
     return WritePageGuard(page_id, frame_header, replacer_, bpm_latch_, disk_scheduler_);
   } else {
     // cache MISSED
@@ -265,13 +269,13 @@ auto BufferPoolManager::CheckedWritePage(page_id_t page_id, AccessType access_ty
       auto free_frame = getFrameHeaderByID(free_frame_id.value());
       scheduleIO(false, free_frame->GetDataMut(), page_id);
 
-      free_frame->page_id_ = std::make_optional(page_id);
+      /* free_frame->page_id_ = std::make_optional(page_id);
       free_frame->pin_count_ = 1;
       free_frame->is_dirty_ = true;
       free_frame->is_write_ = true;
 
       replacer_->RecordAccess(free_frame->frame_id_, page_id);
-      replacer_->SetEvictable(free_frame->frame_id_, false);
+      replacer_->SetEvictable(free_frame->frame_id_, false); */
 
       page_table_.insert({page_id, free_frame->frame_id_});
 
@@ -299,13 +303,14 @@ auto BufferPoolManager::CheckedWritePage(page_id_t page_id, AccessType access_ty
       page_table_.erase(victim_page_id.value());
 
       scheduleIO(false, evicted_frame->GetDataMut(), page_id);
-      evicted_frame->page_id_ = std::make_optional(page_id);
+
+      /* evicted_frame->page_id_ = std::make_optional(page_id);
       evicted_frame->pin_count_ = 1;
       evicted_frame->is_dirty_ = true;
       evicted_frame->is_write_ = true;
 
       replacer_->RecordAccess(evicted_frame->frame_id_, evicted_frame->page_id_.value());
-      replacer_->SetEvictable(evicted_frame->frame_id_, false);
+      replacer_->SetEvictable(evicted_frame->frame_id_, false); */
 
       page_table_.insert({evicted_frame->page_id_.value(), evicted_frame->frame_id_});
 
@@ -353,10 +358,10 @@ auto BufferPoolManager::CheckedReadPage(page_id_t page_id, AccessType access_typ
       return std::nullopt;
     }
 
-    frame_header->pin_count_ += 1;
+    /* frame_header->pin_count_ += 1;
 
-    replacer_->RecordAccess(frame_header->frame_id_, page_id);
-    replacer_->SetEvictable(frame_header->frame_id_, false);  // safe, may not be unnecessary
+     replacer_->RecordAccess(frame_header->frame_id_, page_id);
+    replacer_->SetEvictable(frame_header->frame_id_, false);  // safe, may not be unnecessary */
 
     return ReadPageGuard(page_id, frame_header, replacer_, bpm_latch_, disk_scheduler_);
   } else {
@@ -365,13 +370,14 @@ auto BufferPoolManager::CheckedReadPage(page_id_t page_id, AccessType access_typ
       // there is a free_frame
       auto free_frame = getFrameHeaderByID(free_frame_id.value());
       scheduleIO(false, free_frame->GetDataMut(), page_id);
-      free_frame->page_id_ = std::make_optional(page_id);
+
+      /* free_frame->page_id_ = std::make_optional(page_id);
       free_frame->pin_count_ = 1;
       free_frame->is_dirty_ = false;
       free_frame->is_write_ = false;
 
       replacer_->RecordAccess(free_frame->frame_id_, page_id);
-      replacer_->SetEvictable(free_frame->frame_id_, false);
+      replacer_->SetEvictable(free_frame->frame_id_, false);*/
 
       page_table_.insert({page_id, free_frame->frame_id_});
 
@@ -398,13 +404,13 @@ auto BufferPoolManager::CheckedReadPage(page_id_t page_id, AccessType access_typ
       page_table_.erase(victim_page_id.value());
 
       scheduleIO(false, evicted_frame->GetDataMut(), page_id);
-      evicted_frame->page_id_ = std::make_optional(page_id);
+      /*evicted_frame->page_id_ = std::make_optional(page_id);
       evicted_frame->pin_count_ = 1;
       evicted_frame->is_dirty_ = false;
       evicted_frame->is_write_ = false;
 
       replacer_->RecordAccess(evicted_frame->frame_id_, evicted_frame->page_id_.value());
-      replacer_->SetEvictable(evicted_frame->frame_id_, false);
+      replacer_->SetEvictable(evicted_frame->frame_id_, false);*/
 
       page_table_.insert({evicted_frame->page_id_.value(), evicted_frame->frame_id_});
 

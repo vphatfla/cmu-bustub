@@ -12,9 +12,8 @@
 
 #include "storage/page/page_guard.h"
 #include <future>
-#include <iostream>
 #include <memory>
-#include <ostream>
+#include <mutex>
 #include <utility>
 #include <vector>
 #include "buffer/arc_replacer.h"
@@ -45,8 +44,14 @@ ReadPageGuard::ReadPageGuard(page_id_t page_id, std::shared_ptr<FrameHeader> fra
       replacer_(std::move(replacer)),
       bpm_latch_(std::move(bpm_latch)),
       disk_scheduler_(std::move(disk_scheduler)) {
-  // UNIMPLEMENTED("TODO(P1): Add implementation.");
-  frame_->pin_count_ += 1;  // atomic field, no need to lock
+  frame_->page_id_ = page_id;
+  frame_->is_dirty_ = false;
+  frame_->is_write_ = false;
+  frame_->pin_count_ += 1;
+
+  replacer_->RecordAccess(frame->frame_id_, frame->page_id_.value());
+  replacer->SetEvictable(frame->frame_id_, false);
+
   is_valid_ = true;
 }
 
@@ -91,7 +96,7 @@ ReadPageGuard::ReadPageGuard(ReadPageGuard &&that) noexcept
  * @return ReadPageGuard& The newly valid `ReadPageGuard`.
  */
 auto ReadPageGuard::operator=(ReadPageGuard &&that) noexcept -> ReadPageGuard & {
-  if (this != &that && is_valid_ && that.is_valid_) {
+  if (this != &that) {
     page_id_ = that.page_id_;
     frame_ = std::move(that.frame_);
     replacer_ = std::move(that.replacer_);
@@ -133,7 +138,9 @@ auto ReadPageGuard::IsDirty() const -> bool {
  */
 void ReadPageGuard::Flush() {
   // use disk_scheduler_ to schedule the flush
-  if (!is_valid_) return;
+  // acquire the lock
+  std::lock_guard<std::mutex> lock(*bpm_latch_);
+  if (!is_valid_ || !frame_->is_dirty_) return;
   std::promise<bool> p;
   std::future<bool> f = p.get_future();
   auto request = DiskRequest{
@@ -146,10 +153,10 @@ void ReadPageGuard::Flush() {
   disk_scheduler_->Schedule(requests);
   try {
     bool res = f.get();
-    std::cout << "Flushing successfully " << res << std::endl;
-    return;
+    BUSTUB_ASSERT(res, "Result of flush must be TRUE");
+    frame_->is_dirty_ = false;
   } catch (...) {
-    throw Exception("Something went wrong");
+    throw Exception("Something went wrong when flush page to disk");
   }
 }
 
@@ -165,10 +172,17 @@ void ReadPageGuard::Flush() {
  * TODO(P1): Add implementation.
  */
 void ReadPageGuard::Drop() {
-  // UNIMPLEMENTED("TODO(P1): Add implementation.");
   if (!is_valid_) {
     return;
   }
+  if (frame_->is_dirty_) {
+    Flush();
+  }
+  std::lock_guard<std::mutex> lock(*bpm_latch_);
+  frame_->pin_count_ -= 1;
+  frame_->is_write_ = false;
+
+  replacer_->SetEvictable(frame_->frame_id_, true);
 }
 
 /** @brief The destructor for `ReadPageGuard`. This destructor simply calls `Drop()`. */
@@ -199,7 +213,15 @@ WritePageGuard::WritePageGuard(page_id_t page_id, std::shared_ptr<FrameHeader> f
       replacer_(std::move(replacer)),
       bpm_latch_(std::move(bpm_latch)),
       disk_scheduler_(std::move(disk_scheduler)) {
-  UNIMPLEMENTED("TODO(P1): Add implementation.");
+  frame_->page_id_ = page_id;
+  frame_->is_dirty_ = true;
+  frame_->is_write_ = true;
+  frame_->pin_count_ += 1;
+
+  replacer_->RecordAccess(frame->frame_id_, frame->page_id_.value());
+  replacer->SetEvictable(frame->frame_id_, false);
+
+  is_valid_ = true;
 }
 
 /**
@@ -292,29 +314,26 @@ auto WritePageGuard::IsDirty() const -> bool {
  * TODO(P1): Add implementation.
  */
 void WritePageGuard::Flush() {
-  // UNIMPLEMENTED("TODO(P1): Add implementation.");
-  if (!is_valid_) {
-    return;
-  }
-  // need to latch?
+  // use disk_scheduler_ to schedule the flush
+  // acquire the lock
+  std::lock_guard<std::mutex> lock(*bpm_latch_);
+  if (!is_valid_ || !frame_->is_dirty_) return;
   std::promise<bool> p;
   std::future<bool> f = p.get_future();
-  const DiskRequest request{
+  auto request = DiskRequest{
       .is_write_ = true,
       .data_ = frame_->GetDataMut(),
       .page_id_ = page_id_,
       .callback_ = std::move(p),
   };
-  std::vector<DiskRequest> requests;
-  requests.emplace_back(request);
+  auto requests = std::vector<DiskRequest>{std::move(request)};
   disk_scheduler_->Schedule(requests);
-
   try {
     bool res = f.get();
-    std::cout << "Flushing successfully " << res << std::endl;
-    return;
+    BUSTUB_ASSERT(res, "Result of flush must be TRUE");
+    frame_->is_dirty_ = false;
   } catch (...) {
-    throw Exception("Something went wrong");
+    throw Exception("Something went wrong when flush page to disk");
   }
 }
 
@@ -330,8 +349,17 @@ void WritePageGuard::Flush() {
  * TODO(P1): Add implementation.
  */
 void WritePageGuard::Drop() {
-  // UNIMPLEMENTED("TODO(P1): Add implementation.");
-  // used by destructor only to free up space
+  if (!is_valid_) {
+    return;
+  }
+  if (frame_->is_dirty_) {
+    Flush();
+  }
+  std::lock_guard<std::mutex> lock(*bpm_latch_);
+  frame_->pin_count_ -= 1;
+  frame_->is_write_ = false;
+
+  replacer_->SetEvictable(frame_->frame_id_, true);
 }
 
 /** @brief The destructor for `WritePageGuard`. This destructor simply calls `Drop()`. */
