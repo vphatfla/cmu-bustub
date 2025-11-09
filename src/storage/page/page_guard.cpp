@@ -132,24 +132,18 @@ auto ReadPageGuard::IsDirty() const -> bool {
  * TODO(P1): Add implementation.
  */
 void ReadPageGuard::Flush() {
-  // UNIMPLEMENTED("TODO(P1): Add implementation.");
   // use disk_scheduler_ to schedule the flush
-
-  // need to latch?
-
   if (!is_valid_) return;
   std::promise<bool> p;
   std::future<bool> f = p.get_future();
-  const DiskRequest request{
+  auto request = DiskRequest{
       .is_write_ = true,
       .data_ = frame_->GetDataMut(),
       .page_id_ = page_id_,
       .callback_ = std::move(p),
   };
-  std::vector<DiskRequest> requests;
-  requests.emplace_back(request);
+  auto requests = std::vector<DiskRequest>{std::move(request)};
   disk_scheduler_->Schedule(requests);
-
   try {
     bool res = f.get();
     std::cout << "Flushing successfully " << res << std::endl;

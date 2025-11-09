@@ -183,6 +183,6 @@ class BufferPoolManager {
   auto getFrameHeaderByID(frame_id_t fid) -> std::shared_ptr<FrameHeader>;
 
   // @brief helper function that schedule a I/O request on a page_id and wait until it finishes
-  auto scheduleIO(const bool &is_write, char *data, const page_id_t &page_id) -> bool;
+  void scheduleIO(const bool &is_write, char *data, const page_id_t &page_id);
 };
 }  // namespace bustub
