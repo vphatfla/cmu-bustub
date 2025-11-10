@@ -49,8 +49,8 @@ ReadPageGuard::ReadPageGuard(page_id_t page_id, std::shared_ptr<FrameHeader> fra
   frame_->is_write_ = false;
   frame_->pin_count_ += 1;
 
-  replacer_->RecordAccess(frame->frame_id_, frame->page_id_.value());
-  replacer->SetEvictable(frame->frame_id_, false);
+  replacer_->RecordAccess(frame_->frame_id_, frame_->page_id_.value());
+  replacer_->SetEvictable(frame_->frame_id_, false);
 
   is_valid_ = true;
 }
@@ -76,7 +76,9 @@ ReadPageGuard::ReadPageGuard(ReadPageGuard &&that) noexcept
       replacer_(std::move(that.replacer_)),
       bpm_latch_(std::move(that.bpm_latch_)),
       disk_scheduler_(std::move(that.disk_scheduler_)),
-      is_valid_(that.is_valid_) {}
+      is_valid_(that.is_valid_) {
+  that.is_valid_ = false;
+}
 
 /**
  * @brief The move assignment operator for `ReadPageGuard`.
@@ -97,12 +99,14 @@ ReadPageGuard::ReadPageGuard(ReadPageGuard &&that) noexcept
  */
 auto ReadPageGuard::operator=(ReadPageGuard &&that) noexcept -> ReadPageGuard & {
   if (this != &that) {
+    Drop();
     page_id_ = that.page_id_;
     frame_ = std::move(that.frame_);
     replacer_ = std::move(that.replacer_);
     bpm_latch_ = std::move(that.bpm_latch_);
     disk_scheduler_ = std::move(that.disk_scheduler_);
     is_valid_ = that.is_valid_;
+    that.is_valid_ = false;
   }
   return *this;
 }
@@ -184,6 +188,7 @@ void ReadPageGuard::Drop() {
   frame_->is_write_ = false;
 
   replacer_->SetEvictable(frame_->frame_id_, true);
+  is_valid_ = false;
 }
 
 /** @brief The destructor for `ReadPageGuard`. This destructor simply calls `Drop()`. */
@@ -219,8 +224,8 @@ WritePageGuard::WritePageGuard(page_id_t page_id, std::shared_ptr<FrameHeader> f
   frame_->is_write_ = true;
   frame_->pin_count_ += 1;
 
-  replacer_->RecordAccess(frame->frame_id_, frame->page_id_.value());
-  replacer->SetEvictable(frame->frame_id_, false);
+  replacer_->RecordAccess(frame_->frame_id_, frame_->page_id_.value());
+  replacer_->SetEvictable(frame_->frame_id_, false);
 
   is_valid_ = true;
 }
@@ -240,13 +245,16 @@ WritePageGuard::WritePageGuard(page_id_t page_id, std::shared_ptr<FrameHeader> f
  *
  * @param that The other page guard.
  */
+// move constructor
 WritePageGuard::WritePageGuard(WritePageGuard &&that) noexcept
     : page_id_(that.page_id_),
       frame_(std::move(that.frame_)),
       replacer_(std::move(that.replacer_)),
       bpm_latch_(std::move(that.bpm_latch_)),
       disk_scheduler_(std::move(that.disk_scheduler_)),
-      is_valid_(that.is_valid_) {}
+      is_valid_(that.is_valid_) {
+  that.is_valid_ = false;
+}
 
 /**
  * @brief The move assignment operator for `WritePageGuard`.
@@ -267,12 +275,14 @@ WritePageGuard::WritePageGuard(WritePageGuard &&that) noexcept
  */
 auto WritePageGuard::operator=(WritePageGuard &&that) noexcept -> WritePageGuard & {
   if (this != &that) {
+    Drop();
     page_id_ = that.page_id_;
     frame_ = std::move(that.frame_);
     replacer_ = std::move(that.replacer_);
     bpm_latch_ = std::move(that.bpm_latch_);
     disk_scheduler_ = std::move(that.disk_scheduler_);
     is_valid_ = that.is_valid_;
+    that.is_valid_ = false;
   }
   return *this;
 }
@@ -362,6 +372,8 @@ void WritePageGuard::Drop() {
   frame_->is_write_ = false;
 
   replacer_->SetEvictable(frame_->frame_id_, true);
+
+  is_valid_ = false;
 }
 
 /** @brief The destructor for `WritePageGuard`. This destructor simply calls `Drop()`. */

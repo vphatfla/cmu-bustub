@@ -154,8 +154,23 @@ auto BufferPoolManager::NewPage() -> page_id_t { return next_page_id_++; }
  * @return `false` if the page exists but could not be deleted, `true` if the page didn't exist or deletion succeeded.
  */
 auto BufferPoolManager::DeletePage(page_id_t page_id) -> bool {
-  // UNIMPLEMENTED("TODO(P1): Add implementation.");
-  return false;
+  // remove from memory: from bpm and replacer
+  if (auto pc = GetPinCount(page_id); pc.has_value() && pc.value() > 0) {
+    return false;
+  }
+
+  std::lock_guard<std::mutex> lock(*bpm_latch_);
+  if (auto it = page_table_.find(page_id); it != page_table_.end()) {
+    auto frame = getFrameHeaderByID(it->second);
+    replacer_->SetEvictable(frame->frame_id_, true);
+    replacer_->Remove(frame->frame_id_);
+    frame->Reset();
+
+    page_table_.erase(page_id);
+  }
+  // remove from disk: from diskschduler
+  disk_scheduler_->DeallocatePage(page_id);
+  return true;
 }
 
 /**
@@ -304,8 +319,9 @@ auto BufferPoolManager::CheckedWritePage(page_id_t page_id, AccessType access_ty
 
       scheduleIO(false, evicted_frame->GetDataMut(), page_id);
 
-      /* evicted_frame->page_id_ = std::make_optional(page_id);
-      evicted_frame->pin_count_ = 1;
+      evicted_frame->page_id_ = std::make_optional(page_id);
+
+      /* evicted_frame->pin_count_ = 1;
       evicted_frame->is_dirty_ = true;
       evicted_frame->is_write_ = true;
 
@@ -404,8 +420,9 @@ auto BufferPoolManager::CheckedReadPage(page_id_t page_id, AccessType access_typ
       page_table_.erase(victim_page_id.value());
 
       scheduleIO(false, evicted_frame->GetDataMut(), page_id);
-      /*evicted_frame->page_id_ = std::make_optional(page_id);
-      evicted_frame->pin_count_ = 1;
+      evicted_frame->page_id_ = std::make_optional(page_id);
+
+      /* evicted_frame->pin_count_ = 1;
       evicted_frame->is_dirty_ = false;
       evicted_frame->is_write_ = false;
 
