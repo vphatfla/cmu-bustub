@@ -180,14 +180,13 @@ void ReadPageGuard::Drop() {
   if (!is_valid_) {
     return;
   }
-  if (frame_->is_dirty_) {
-    Flush();
-  }
   std::lock_guard<std::mutex> lock(*bpm_latch_);
   frame_->pin_count_ -= 1;
   frame_->is_write_ = false;
 
-  replacer_->SetEvictable(frame_->frame_id_, true);
+  if (frame_->pin_count_ == 0) {
+    replacer_->SetEvictable(frame_->frame_id_, true);
+  }
   is_valid_ = false;
 }
 
@@ -371,8 +370,9 @@ void WritePageGuard::Drop() {
   frame_->pin_count_ -= 1;
   frame_->is_write_ = false;
 
-  replacer_->SetEvictable(frame_->frame_id_, true);
-
+  if (frame_->pin_count_ == 0) {
+    replacer_->SetEvictable(frame_->frame_id_, true);
+  }
   is_valid_ = false;
 }
 

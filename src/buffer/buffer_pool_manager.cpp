@@ -155,11 +155,11 @@ auto BufferPoolManager::NewPage() -> page_id_t { return next_page_id_++; }
  */
 auto BufferPoolManager::DeletePage(page_id_t page_id) -> bool {
   // remove from memory: from bpm and replacer
+  std::lock_guard<std::mutex> lock(*bpm_latch_);
   if (auto pc = GetPinCount(page_id); pc.has_value() && pc.value() > 0) {
     return false;
   }
 
-  std::lock_guard<std::mutex> lock(*bpm_latch_);
   if (auto it = page_table_.find(page_id); it != page_table_.end()) {
     auto frame = getFrameHeaderByID(it->second);
     replacer_->SetEvictable(frame->frame_id_, true);
@@ -282,10 +282,11 @@ auto BufferPoolManager::CheckedWritePage(page_id_t page_id, AccessType access_ty
     if (free_frame_id.has_value()) {
       // available free frame
       auto free_frame = getFrameHeaderByID(free_frame_id.value());
-      scheduleIO(false, free_frame->GetDataMut(), page_id);
+      scheduleIO(false, free_frame->data_.data(), page_id);
 
-      /* free_frame->page_id_ = std::make_optional(page_id);
-      free_frame->pin_count_ = 1;
+      free_frame->page_id_ = std::make_optional(page_id);
+
+      /*free_frame->pin_count_ = 1;
       free_frame->is_dirty_ = true;
       free_frame->is_write_ = true;
 
@@ -317,7 +318,7 @@ auto BufferPoolManager::CheckedWritePage(page_id_t page_id, AccessType access_ty
 
       page_table_.erase(victim_page_id.value());
 
-      scheduleIO(false, evicted_frame->GetDataMut(), page_id);
+      scheduleIO(false, evicted_frame->data_.data(), page_id);
 
       evicted_frame->page_id_ = std::make_optional(page_id);
 
@@ -385,10 +386,11 @@ auto BufferPoolManager::CheckedReadPage(page_id_t page_id, AccessType access_typ
     if (auto free_frame_id = getFreeFrameID(); free_frame_id.has_value()) {
       // there is a free_frame
       auto free_frame = getFrameHeaderByID(free_frame_id.value());
-      scheduleIO(false, free_frame->GetDataMut(), page_id);
+      scheduleIO(false, free_frame->data_.data(), page_id);
 
-      /* free_frame->page_id_ = std::make_optional(page_id);
-      free_frame->pin_count_ = 1;
+      free_frame->page_id_ = std::make_optional(page_id);
+
+      /* free_frame->pin_count_ = 1;
       free_frame->is_dirty_ = false;
       free_frame->is_write_ = false;
 
@@ -419,7 +421,7 @@ auto BufferPoolManager::CheckedReadPage(page_id_t page_id, AccessType access_typ
 
       page_table_.erase(victim_page_id.value());
 
-      scheduleIO(false, evicted_frame->GetDataMut(), page_id);
+      scheduleIO(false, evicted_frame->data_.data(), page_id);
       evicted_frame->page_id_ = std::make_optional(page_id);
 
       /* evicted_frame->pin_count_ = 1;
@@ -509,7 +511,7 @@ auto BufferPoolManager::FlushPageUnsafe(page_id_t page_id) -> bool {
   if (auto it = page_table_.find(page_id); it != page_table_.end()) {
     auto frame = getFrameHeaderByID(it->second);
     if (!frame->is_dirty_) return true;
-    scheduleIO(true, frame->GetDataMut(), page_id);
+    scheduleIO(true, frame->data_.data(), page_id);
     frame->is_dirty_ = false;
     return true;
   } else {
@@ -540,7 +542,7 @@ auto BufferPoolManager::FlushPage(page_id_t page_id) -> bool {
   if (auto it = page_table_.find(page_id); it != page_table_.end()) {
     auto frame = getFrameHeaderByID(it->second);
     if (!frame->is_dirty_) return true;
-    scheduleIO(true, frame->GetDataMut(), page_id);
+    scheduleIO(true, frame->data_.data(), page_id);
     frame->is_dirty_ = false;
     return true;
   } else {
@@ -574,10 +576,12 @@ void BufferPoolManager::FlushAllPagesUnsafe() {
                            .data_ = frame->GetDataMut(),
                            .page_id_ = frame->page_id_.value(),
                            .callback_ = std::move(p)};
+      requests.emplace_back(std::move(r));
       frame->is_dirty_ = false;
     }
   }
   if (requests.empty()) return;
+  disk_scheduler_->Schedule(requests);
   for (auto &f : futures) {
     try {
       auto res = f.get();
@@ -614,6 +618,7 @@ void BufferPoolManager::FlushAllPages() {
                            .data_ = frame->GetDataMut(),
                            .page_id_ = frame->page_id_.value(),
                            .callback_ = std::move(p)};
+      requests.emplace_back(std::move(r));
       frame->is_dirty_ = false;
     }
   }
@@ -654,7 +659,6 @@ void BufferPoolManager::FlushAllPages() {
  * @return std::optional<size_t> The pin count if the page exists; otherwise, `std::nullopt`.
  */
 auto BufferPoolManager::GetPinCount(page_id_t page_id) -> std::optional<size_t> {
-  std::lock_guard<std::mutex> lock(*bpm_latch_);
   if (auto it = page_table_.find(page_id); it != page_table_.end()) {
     auto frame = getFrameHeaderByID(it->second);
     return frame->pin_count_.load();
