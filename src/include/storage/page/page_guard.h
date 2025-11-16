@@ -12,7 +12,9 @@
 
 #pragma once
 
+#include <condition_variable>
 #include <memory>
+#include <mutex>
 
 #include "buffer/arc_replacer.h"
 #include "buffer/buffer_pool_manager.h"
@@ -38,18 +40,7 @@ class ReadPageGuard {
   friend class BufferPoolManager;
 
  public:
-  /**
-   * @brief The default constructor for a `ReadPageGuard`.
-   *
-   * Note that we do not EVER want use a guard that has only been default constructed. The only reason we even define
-   * this default constructor is to enable placing an "uninitialized" guard on the stack that we can later move assign
-   * via `=`.
-   *
-   * **Use of an uninitialized page guard is undefined behavior.**
-   *
-   * In other words, the only way to get a valid `ReadPageGuard` is through the buffer pool manager.
-   */
-  ReadPageGuard() = default;
+    ReadPageGuard() = default;
 
   ReadPageGuard(const ReadPageGuard &) = delete;
   auto operator=(const ReadPageGuard &) -> ReadPageGuard & = delete;
@@ -69,7 +60,8 @@ class ReadPageGuard {
  private:
   /** @brief Only the buffer pool manager is allowed to construct a valid `ReadPageGuard.` */
   explicit ReadPageGuard(page_id_t page_id, std::shared_ptr<FrameHeader> frame, std::shared_ptr<ArcReplacer> replacer,
-                         std::shared_ptr<std::mutex> bpm_latch, std::shared_ptr<DiskScheduler> disk_scheduler);
+                         std::shared_ptr<std::mutex> bpm_latch, std::shared_ptr<DiskScheduler> disk_scheduler,
+                         std::shared_ptr<std::condition_variable> bpm_cv);
 
   /** @brief The page ID of the page we are guarding. */
   page_id_t page_id_;
@@ -116,12 +108,7 @@ class ReadPageGuard {
    */
   bool is_valid_{false};
 
-  /**
-   * TODO(P1): You may add any fields under here that you think are necessary.
-   *
-   * If you want extra (nonexistent) style points, and you want to be extra fancy, then you can look into the
-   * `std::shared_lock` type and use that for the latching mechanism instead of manually calling `lock` and `unlock`.
-   */
+  std::shared_ptr<std::condition_variable> bpm_cv_;
 };
 
 /**
@@ -140,18 +127,7 @@ class WritePageGuard {
   friend class BufferPoolManager;
 
  public:
-  /**
-   * @brief The default constructor for a `WritePageGuard`.
-   *
-   * Note that we do not EVER want use a guard that has only been default constructed. The only reason we even define
-   * this default constructor is to enable placing an "uninitialized" guard on the stack that we can later move assign
-   * via `=`.
-   *
-   * **Use of an uninitialized page guard is undefined behavior.**
-   *
-   * In other words, the only way to get a valid `WritePageGuard` is through the buffer pool manager.
-   */
-  WritePageGuard() = default;
+    WritePageGuard() = default;
 
   WritePageGuard(const WritePageGuard &) = delete;
   auto operator=(const WritePageGuard &) -> WritePageGuard & = delete;
@@ -176,7 +152,8 @@ class WritePageGuard {
  private:
   /** @brief Only the buffer pool manager is allowed to construct a valid `WritePageGuard.` */
   explicit WritePageGuard(page_id_t page_id, std::shared_ptr<FrameHeader> frame, std::shared_ptr<ArcReplacer> replacer,
-                          std::shared_ptr<std::mutex> bpm_latch, std::shared_ptr<DiskScheduler> disk_scheduler);
+                          std::shared_ptr<std::mutex> bpm_latch, std::shared_ptr<DiskScheduler> disk_scheduler,
+                          std::shared_ptr<std::condition_variable> bpm_cv);
 
   /** @brief The page ID of the page we are guarding. */
   page_id_t page_id_;
@@ -223,12 +200,7 @@ class WritePageGuard {
    */
   bool is_valid_{false};
 
-  /**
-   * TODO(P1): You may add any fields under here that you think are necessary.
-   *
-   * If you want extra (nonexistent) style points, and you want to be extra fancy, then you can look into the
-   * `std::unique_lock` type and use that for the latching mechanism instead of manually calling `lock` and `unlock`.
-   */
+  std::shared_ptr<std::condition_variable> bpm_cv_;
 };
 
 }  // namespace bustub
