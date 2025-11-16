@@ -28,13 +28,11 @@ namespace bustub {
 ArcReplacer::ArcReplacer(size_t num_frames) : replacer_size_(num_frames) { mru_target_size_ = static_cast<size_t>(0); }
 
 void ArcReplacer::PushFrontOfList(std::list<frame_id_t> &list, FrameStatus &f_status) {
-  // std::lock_guard<std::mutex> lock(latch_);
   list.push_front(f_status.frame_id_);
   f_status.list_it_ = list.begin();
 }
 
 void ArcReplacer::PushFrontOfGhostList(std::list<page_id_t> &ghost_list, FrameStatus &f_status) {
-  // std::lock_guard<std::mutex> lock(ghost_latch_);
   ghost_list.push_front(f_status.page_id_);
   f_status.list_it_ = ghost_list.begin();
 }
@@ -114,7 +112,7 @@ void ArcReplacer::RecordAccess(frame_id_t frame_id, page_id_t page_id, [[maybe_u
         mru_target_size_ += std::floor(mfu_ghost_.size() / mru_ghost_.size());
       }
       mru_target_size_ = std::min(mru_target_size_, replacer_size_);
-      mru_ghost_.pop_back();
+      mru_ghost_.erase(f_status->list_it_);
     } else if (f_status->arc_status_ == ArcStatus::MFU_GHOST) {
       // found in mfu_ghost_, decrease mru_target_size_, move to front of mfu_
       if (mfu_ghost_.size() >= mru_ghost_.size()) {
@@ -123,7 +121,7 @@ void ArcReplacer::RecordAccess(frame_id_t frame_id, page_id_t page_id, [[maybe_u
         mru_target_size_ -= std::floor(mru_ghost_.size() / mfu_ghost_.size());
       }
       mru_target_size_ = std::max(mru_target_size_, static_cast<size_t>(0));
-      mfu_ghost_.pop_back();
+      mfu_.erase(f_status->list_it_);
     }
     ghost_map_.erase(page_id);
 

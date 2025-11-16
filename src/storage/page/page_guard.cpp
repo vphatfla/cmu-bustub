@@ -104,7 +104,9 @@ void ReadPageGuard::Flush() {
   // use disk_scheduler_ to schedule the flush
   // acquire the lock
   std::lock_guard<std::mutex> lock(*bpm_latch_);
-  if (!is_valid_ || !frame_->is_dirty_) return;
+  if (!is_valid_ || !frame_->is_dirty_) {
+    return;
+  }
   std::promise<bool> p;
   std::future<bool> f = p.get_future();
   auto request = DiskRequest{
@@ -231,7 +233,9 @@ void WritePageGuard::Flush() {
   // use disk_scheduler_ to schedule the flush
   // acquire the lock
   std::lock_guard<std::mutex> lock(*bpm_latch_);
-  if (!is_valid_ || !frame_->is_dirty_) return;
+  if (!is_valid_ || !frame_->is_dirty_) {
+    return;
+  }
   std::promise<bool> p;
   std::future<bool> f = p.get_future();
   auto request = DiskRequest{

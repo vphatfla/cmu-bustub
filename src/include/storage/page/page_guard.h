@@ -40,7 +40,7 @@ class ReadPageGuard {
   friend class BufferPoolManager;
 
  public:
-    ReadPageGuard() = default;
+  ReadPageGuard() = default;
 
   ReadPageGuard(const ReadPageGuard &) = delete;
   auto operator=(const ReadPageGuard &) -> ReadPageGuard & = delete;
@@ -127,7 +127,7 @@ class WritePageGuard {
   friend class BufferPoolManager;
 
  public:
-    WritePageGuard() = default;
+  WritePageGuard() = default;
 
   WritePageGuard(const WritePageGuard &) = delete;
   auto operator=(const WritePageGuard &) -> WritePageGuard & = delete;

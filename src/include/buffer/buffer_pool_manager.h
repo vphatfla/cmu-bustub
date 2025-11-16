@@ -68,7 +68,7 @@ class FrameHeader {
 
   // @brief is this frame hold by a WRITEPAGEGUARD
   bool is_write_;
-  };
+};
 
 /**
  * @brief The declaration of the `BufferPoolManager` class.
@@ -135,12 +135,12 @@ class BufferPoolManager {
   LogManager *log_manager_ __attribute__((__unused__));
 
   // @brief return a ID of frame that is free and has nothing in it
-  auto getFreeFrameID() -> std::optional<frame_id_t>;
+  auto GetFreeFrameID() -> std::optional<frame_id_t>;
 
   // @brief return a shared pointer to a frameheader that already has a page's data stored inside of it
-  auto getFrameHeaderByID(frame_id_t fid) -> std::shared_ptr<FrameHeader>;
+  auto GetFrameHeaderByID(frame_id_t fid) -> std::shared_ptr<FrameHeader>;
 
   // @brief helper function that schedule a I/O request on a page_id and wait until it finishes
-  void scheduleIO(const bool &is_write, char *data, const page_id_t &page_id);
+  void ScheduleIO(const bool &is_write, char *data, const page_id_t &page_id);
 };
 }  // namespace bustub
