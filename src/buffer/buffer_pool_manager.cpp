@@ -255,7 +255,7 @@ auto BufferPoolManager::CheckedReadPage(page_id_t page_id, AccessType access_typ
   // no free frame, need to evict
   auto evicted_frame_id = replacer_->Evict();
   if (!evicted_frame_id.has_value()) {
-    return std::nullopt;
+      return std::nullopt;
   }
   auto evicted_frame = GetFrameHeaderByID(evicted_frame_id.value());
   if (evicted_frame->pin_count_ != 0) {
