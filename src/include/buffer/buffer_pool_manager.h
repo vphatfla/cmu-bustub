@@ -13,6 +13,7 @@
 #pragma once
 
 #include <condition_variable>
+#include <future>
 #include <list>
 #include <memory>
 #include <optional>
@@ -68,6 +69,9 @@ class FrameHeader {
 
   // @brief is this frame hold by a WRITEPAGEGUARD
   bool is_write_;
+
+  // @brief this indicates if the frame is currently loading data from/to disk
+  bool is_loading_;
 };
 
 /**
@@ -141,6 +145,6 @@ class BufferPoolManager {
   auto GetFrameHeaderByID(frame_id_t fid) -> std::shared_ptr<FrameHeader>;
 
   // @brief helper function that schedule a I/O request on a page_id and wait until it finishes
-  void ScheduleIO(const bool &is_write, char *data, const page_id_t &page_id);
+  auto ScheduleIO(FrameHeader &frame, const bool &is_write, const page_id_t &page_id) -> std::future<bool>;
 };
 }  // namespace bustub

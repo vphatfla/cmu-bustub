@@ -141,6 +141,7 @@ auto BufferPoolManager::DeletePage(page_id_t page_id) -> bool {
     frame->Reset();
 
     page_table_.erase(page_id);
+    free_frames_.emplace_back(frame->frame_id_);
   }
   // remove from disk: from diskschduler
   disk_scheduler_->DeallocatePage(page_id);
@@ -168,7 +169,7 @@ auto BufferPoolManager::CheckedWritePage(page_id_t page_id, AccessType access_ty
   if (auto it = page_table_.find(page_id); it != page_table_.end()) {
     // cache HIT
     auto frame_header = GetFrameHeaderByID(it->second);
-    bpm_cv_->wait(lock, [&] { return frame_header->pin_count_ == 0; });
+    bpm_cv_->wait(lock, [&] { return frame_header->pin_count_ == 0 && !frame_header->is_loading_; });
     if (frame_header->is_dirty_) {
       if (!FlushPageUnsafe(page_id)) {
         std::cout << "ERROR flushing page " << page_id << std::endl;
@@ -183,12 +184,17 @@ auto BufferPoolManager::CheckedWritePage(page_id_t page_id, AccessType access_ty
   if (free_frame_id.has_value()) {
     // available free frame
     auto free_frame = GetFrameHeaderByID(free_frame_id.value());
-    ScheduleIO(false, free_frame->data_.data(), page_id);
-
-    free_frame->page_id_ = std::make_optional(page_id);
-
     page_table_.insert({page_id, free_frame->frame_id_});
 
+    auto future = ScheduleIO(*free_frame, false, page_id);
+    lock.unlock();
+
+    BUSTUB_ASSERT(future.get(), "SCHEDULE IO must return true");
+    lock.lock();
+    free_frame->is_loading_ = false;
+    bpm_cv_->notify_all();
+
+    free_frame->page_id_ = std::make_optional(page_id);
     return WritePageGuard(page_id, free_frame, replacer_, bpm_latch_, disk_scheduler_, bpm_cv_);
   }
   // no available free frame
@@ -211,9 +217,17 @@ auto BufferPoolManager::CheckedWritePage(page_id_t page_id, AccessType access_ty
   }
 
   page_table_.erase(victim_page_id.value());
-  ScheduleIO(false, evicted_frame->data_.data(), page_id);
+  page_table_.insert({page_id, evicted_frame->frame_id_});
+
+  auto future = ScheduleIO(*evicted_frame, false, page_id);
+  lock.unlock();
+
+  BUSTUB_ASSERT(future.get(), "SCHEDULE IO must return true");
+  lock.lock();
+  evicted_frame->is_loading_ = false;
+  bpm_cv_->notify_all();
+
   evicted_frame->page_id_ = std::make_optional(page_id);
-  page_table_.insert({evicted_frame->page_id_.value(), evicted_frame->frame_id_});
   return WritePageGuard(page_id, evicted_frame, replacer_, bpm_latch_, disk_scheduler_, bpm_cv_);
 };
 
@@ -236,7 +250,7 @@ auto BufferPoolManager::CheckedReadPage(page_id_t page_id, AccessType access_typ
   if (auto it = page_table_.find(page_id); it != page_table_.end()) {
     // cache HIT
     auto frame_header = GetFrameHeaderByID(it->second);
-    bpm_cv_->wait(lock, [&] { return frame_header->pin_count_ == 0; });
+    bpm_cv_->wait(lock, [&] { return !frame_header->is_write_ && !frame_header->is_loading_; });
 
     return ReadPageGuard(page_id, frame_header, replacer_, bpm_latch_, disk_scheduler_, bpm_cv_);
   }
@@ -244,18 +258,23 @@ auto BufferPoolManager::CheckedReadPage(page_id_t page_id, AccessType access_typ
   if (auto free_frame_id = GetFreeFrameID(); free_frame_id.has_value()) {
     // there is a free_frame
     auto free_frame = GetFrameHeaderByID(free_frame_id.value());
-    ScheduleIO(false, free_frame->data_.data(), page_id);
-
-    free_frame->page_id_ = std::make_optional(page_id);
-
     page_table_.insert({page_id, free_frame->frame_id_});
 
+    auto future = ScheduleIO(*free_frame, false, page_id);
+    lock.unlock();
+
+    BUSTUB_ASSERT(future.get(), "SCHEDULE IO must return true");
+    lock.lock();
+    free_frame->is_loading_ = false;
+    bpm_cv_->notify_all();
+
+    free_frame->page_id_ = std::make_optional(page_id);
     return ReadPageGuard(page_id, free_frame, replacer_, bpm_latch_, disk_scheduler_, bpm_cv_);
   }
   // no free frame, need to evict
   auto evicted_frame_id = replacer_->Evict();
   if (!evicted_frame_id.has_value()) {
-      return std::nullopt;
+    return std::nullopt;
   }
   auto evicted_frame = GetFrameHeaderByID(evicted_frame_id.value());
   if (evicted_frame->pin_count_ != 0) {
@@ -271,12 +290,17 @@ auto BufferPoolManager::CheckedReadPage(page_id_t page_id, AccessType access_typ
   }
 
   page_table_.erase(victim_page_id.value());
+  page_table_.insert({page_id, evicted_frame->frame_id_});
 
-  ScheduleIO(false, evicted_frame->data_.data(), page_id);
+  auto future = ScheduleIO(*evicted_frame, false, page_id);
+  lock.unlock();
+
+  BUSTUB_ASSERT(future.get(), "SCHEDULE IO must return true");
+  lock.lock();
+  evicted_frame->is_loading_ = false;
+  bpm_cv_->notify_all();
+
   evicted_frame->page_id_ = std::make_optional(page_id);
-
-  page_table_.insert({evicted_frame->page_id_.value(), evicted_frame->frame_id_});
-
   return ReadPageGuard(page_id, evicted_frame, replacer_, bpm_latch_, disk_scheduler_, bpm_cv_);
 };
 
@@ -351,7 +375,12 @@ auto BufferPoolManager::FlushPageUnsafe(page_id_t page_id) -> bool {
     if (!frame->is_dirty_) {
       return true;
     }
-    ScheduleIO(true, frame->data_.data(), page_id);
+
+    frame->is_loading_ = true;
+    auto future = ScheduleIO(*frame, true, page_id);
+    BUSTUB_ASSERT(future.get(), "SCHEDULE IO must return TRUE");
+    frame->is_loading_ = false;
+
     frame->is_dirty_ = false;
     return true;
   }
@@ -378,7 +407,15 @@ auto BufferPoolManager::FlushPage(page_id_t page_id) -> bool {
     if (!frame->is_dirty_) {
       return true;
     }
-    ScheduleIO(true, frame->data_.data(), page_id);
+
+    frame->is_loading_ = true;
+    auto future = ScheduleIO(*frame, true, page_id);
+    lock.unlock();
+
+    BUSTUB_ASSERT(future.get(), "Schedule IO must return TRUE");
+    lock.lock();
+    frame->is_loading_ = false;
+
     frame->is_dirty_ = false;
     return true;
   }
@@ -497,16 +534,18 @@ auto BufferPoolManager::GetFrameHeaderByID(frame_id_t fid) -> std::shared_ptr<Fr
 }
 
 // NOLINTNEXTLINE(readability-non-const-parameter)
-void BufferPoolManager::ScheduleIO(const bool &is_write, char *data, const page_id_t &page_id) {
+auto BufferPoolManager::ScheduleIO(FrameHeader &frame, const bool &is_write, const page_id_t &page_id)
+    -> std::future<bool> {
   std::promise<bool> promise;
   std::future<bool> future = promise.get_future();
-  auto request =
-      DiskRequest{.is_write_ = is_write, .data_ = data, .page_id_ = page_id, .callback_ = std::move(promise)};
+  frame.is_loading_ = true;
+  auto request = DiskRequest{
+      .is_write_ = is_write, .data_ = frame.GetDataMut(), .page_id_ = page_id, .callback_ = std::move(promise)};
   auto requests = std::vector<DiskRequest>{};
   requests.emplace_back(std::move(request));
   disk_scheduler_->Schedule(requests);
-  auto res = future.get();
 
-  BUSTUB_ASSERT(res, "result of IO request must be TRUE");
+  return future;
+  // BUSTUB_ASSERT(res, "result of IO request must be TRUE");
 }
 }  // namespace bustub
