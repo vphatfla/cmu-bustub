@@ -123,13 +123,20 @@ auto BufferPoolManager::NewPage() -> page_id_t {
  * If the page is pinned in the buffer pool, this function does nothing and returns `false`. Otherwise, this function
  * removes the page from both disk and memory (if it is still in the buffer pool), returning `true`.
  *
+ * ### Implementation
+ *
+ * Think about all of the places that a page or a page's metadata could be, and use that to guide you on implementing
+ * this function. You will probably want to implement this function _after_ you have implemented `CheckedReadPage` and
+ * `CheckedWritePage`.
+ *
  */
 auto BufferPoolManager::DeletePage(page_id_t page_id) -> bool {
+  // remove from memory: from bpm and replacer
+  std::lock_guard<std::mutex> lock(*bpm_latch_);
   if (auto pc = GetPinCount(page_id); pc.has_value() && pc.value() > 0) {
     return false;
   }
 
-  std::lock_guard<std::mutex> lock(*bpm_latch_);
   if (auto it = page_table_.find(page_id); it != page_table_.end()) {
     auto frame = GetFrameHeaderByID(it->second);
     if (frame->is_loading_) {
@@ -526,7 +533,7 @@ void BufferPoolManager::FlushAllPages() {
  *
  */
 auto BufferPoolManager::GetPinCount(page_id_t page_id) -> std::optional<size_t> {
-  std::lock_guard<std::mutex> lock(*bpm_latch_);
+  std::lock_guard<std::mutex> lock(bpm_latch_); 
   if (auto it = page_table_.find(page_id); it != page_table_.end()) {
     auto frame = GetFrameHeaderByID(it->second);
     return frame->pin_count_.load();

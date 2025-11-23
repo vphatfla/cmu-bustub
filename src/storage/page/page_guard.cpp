@@ -35,7 +35,6 @@ ReadPageGuard::ReadPageGuard(page_id_t page_id, std::shared_ptr<FrameHeader> fra
       disk_scheduler_(std::move(disk_scheduler)),
       bpm_cv_(std::move(bpm_cv_)) {
   frame_->page_id_ = page_id;
-  frame_->is_dirty_ = false;
   frame_->is_write_ = false;
   frame_->pin_count_ += 1;
 
@@ -103,7 +102,7 @@ auto ReadPageGuard::IsDirty() const -> bool {
 void ReadPageGuard::Flush() {
   // use disk_scheduler_ to schedule the flush
   // acquire the lock
-  std::lock_guard<std::mutex> lock(*bpm_latch_);
+  std::unique_lock<std::mutex> lock(*bpm_latch_);
   if (!is_valid_ || !frame_->is_dirty_) {
     return;
   }
@@ -118,6 +117,7 @@ void ReadPageGuard::Flush() {
   std::vector<DiskRequest> requests;
   requests.emplace_back(std::move(request));
   disk_scheduler_->Schedule(requests);
+  lock.unlock();
   try {
     bool res = f.get();
     BUSTUB_ASSERT(res, "Result of flush must be TRUE");
@@ -160,7 +160,6 @@ WritePageGuard::WritePageGuard(page_id_t page_id, std::shared_ptr<FrameHeader> f
       disk_scheduler_(std::move(disk_scheduler)),
       bpm_cv_(std::move(bpm_cv)) {
   frame_->page_id_ = page_id;
-  frame_->is_dirty_ = true;
   frame_->is_write_ = true;
   frame_->pin_count_ += 1;
 
@@ -232,7 +231,7 @@ auto WritePageGuard::IsDirty() const -> bool {
 void WritePageGuard::Flush() {
   // use disk_scheduler_ to schedule the flush
   // acquire the lock
-  std::lock_guard<std::mutex> lock(*bpm_latch_);
+  std::unique_lock<std::mutex> lock(*bpm_latch_);
   if (!is_valid_ || !frame_->is_dirty_) {
     return;
   }
@@ -247,6 +246,7 @@ void WritePageGuard::Flush() {
   std::vector<DiskRequest> requests;
   requests.emplace_back(std::move(request));
   disk_scheduler_->Schedule(requests);
+  lock.unlock();
   try {
     bool res = f.get();
     BUSTUB_ASSERT(res, "Result of flush must be TRUE");
@@ -260,9 +260,9 @@ void WritePageGuard::Drop() {
   if (!is_valid_) {
     return;
   }
-  if (frame_->is_dirty_) {
+  /* if (frame_->is_dirty_) {
     Flush();
-  }
+  } */
   std::lock_guard<std::mutex> lock(*bpm_latch_);
   frame_->pin_count_ -= 1;
   frame_->is_write_ = false;
