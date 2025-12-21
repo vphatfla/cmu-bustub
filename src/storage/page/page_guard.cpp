@@ -15,6 +15,7 @@
 #include <future>
 #include <memory>
 #include <mutex>
+#include <shared_mutex>
 #include <utility>
 #include <vector>
 #include "buffer/arc_replacer.h"
@@ -231,7 +232,7 @@ auto WritePageGuard::IsDirty() const -> bool {
 void WritePageGuard::Flush() {
   // use disk_scheduler_ to schedule the flush
   // acquire the lock
-  std::unique_lock<std::mutex> lock(*bpm_latch_);
+  std::lock_guard<std::shared_mutex> lock_shared_rw(frame_->rwlatch_);
   if (!is_valid_ || !frame_->is_dirty_) {
     return;
   }
@@ -246,7 +247,7 @@ void WritePageGuard::Flush() {
   std::vector<DiskRequest> requests;
   requests.emplace_back(std::move(request));
   disk_scheduler_->Schedule(requests);
-  lock.unlock();
+  std::lock_guard<std::mutex> lock(*bpm_latch_);
   try {
     bool res = f.get();
     BUSTUB_ASSERT(res, "Result of flush must be TRUE");
@@ -260,9 +261,6 @@ void WritePageGuard::Drop() {
   if (!is_valid_) {
     return;
   }
-  /* if (frame_->is_dirty_) {
-    Flush();
-  } */
   std::lock_guard<std::mutex> lock(*bpm_latch_);
   frame_->pin_count_ -= 1;
   frame_->is_write_ = false;
