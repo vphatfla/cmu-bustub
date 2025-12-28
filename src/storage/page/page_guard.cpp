@@ -38,10 +38,6 @@ ReadPageGuard::ReadPageGuard(page_id_t page_id, std::shared_ptr<FrameHeader> fra
   frame_->page_id_ = page_id;
   frame_->is_write_ = false;
   frame_->pin_count_ += 1;
-
-  replacer_->RecordAccess(frame_->frame_id_, frame_->page_id_.value());
-  replacer_->SetEvictable(frame_->frame_id_, false);
-
   is_valid_ = true;
 }
 
@@ -102,8 +98,6 @@ auto ReadPageGuard::IsDirty() const -> bool {
  */
 void ReadPageGuard::Flush() {
   // use disk_scheduler_ to schedule the flush
-  // acquire the lock
-  std::unique_lock<std::mutex> lock(*bpm_latch_);
   if (!is_valid_ || !frame_->is_dirty_) {
     return;
   }
@@ -111,14 +105,13 @@ void ReadPageGuard::Flush() {
   std::future<bool> f = p.get_future();
   auto request = DiskRequest{
       .is_write_ = true,
-      .data_ = frame_->GetDataMut(),
+      .data_ = frame_->data_.data(),
       .page_id_ = page_id_,
       .callback_ = std::move(p),
   };
   std::vector<DiskRequest> requests;
   requests.emplace_back(std::move(request));
   disk_scheduler_->Schedule(requests);
-  lock.unlock();
   try {
     bool res = f.get();
     BUSTUB_ASSERT(res, "Result of flush must be TRUE");
@@ -132,15 +125,17 @@ void ReadPageGuard::Drop() {
   if (!is_valid_) {
     return;
   }
-  std::lock_guard<std::mutex> lock(*bpm_latch_);
   frame_->pin_count_ -= 1;
+  BUSTUB_ASSERT(frame_->pin_count_ >= 0, "WritePageGuard frame pin_count must >= 0 after dropping the frame");
   frame_->is_write_ = false;
-
-  if (frame_->pin_count_ == 0) {
-    replacer_->SetEvictable(frame_->frame_id_, true);
-  }
   is_valid_ = false;
-  bpm_cv_->notify_one();
+  {
+    std::lock_guard<std::mutex> lock(*bpm_latch_);
+    if (frame_->pin_count_ == 0) {
+      replacer_->SetEvictable(frame_->frame_id_, true);
+    }
+  }
+  frame_->rwlatch_.unlock_shared();
 }
 
 /** @brief The destructor for `ReadPageGuard`. This destructor simply calls `Drop()`. */
@@ -163,9 +158,6 @@ WritePageGuard::WritePageGuard(page_id_t page_id, std::shared_ptr<FrameHeader> f
   frame_->page_id_ = page_id;
   frame_->is_write_ = true;
   frame_->pin_count_ += 1;
-
-  replacer_->RecordAccess(frame_->frame_id_, frame_->page_id_.value());
-  replacer_->SetEvictable(frame_->frame_id_, false);
 
   is_valid_ = true;
 }
@@ -230,24 +222,20 @@ auto WritePageGuard::IsDirty() const -> bool {
 }
 
 void WritePageGuard::Flush() {
-  // use disk_scheduler_ to schedule the flush
-  // acquire the lock
-  std::lock_guard<std::shared_mutex> lock_shared_rw(frame_->rwlatch_);
-  if (!is_valid_ || !frame_->is_dirty_) {
+  if (!is_valid_) {
     return;
   }
   std::promise<bool> p;
   std::future<bool> f = p.get_future();
   auto request = DiskRequest{
       .is_write_ = true,
-      .data_ = frame_->GetDataMut(),
+      .data_ = frame_->data_.data(),
       .page_id_ = page_id_,
       .callback_ = std::move(p),
   };
   std::vector<DiskRequest> requests;
   requests.emplace_back(std::move(request));
   disk_scheduler_->Schedule(requests);
-  std::lock_guard<std::mutex> lock(*bpm_latch_);
   try {
     bool res = f.get();
     BUSTUB_ASSERT(res, "Result of flush must be TRUE");
@@ -261,15 +249,16 @@ void WritePageGuard::Drop() {
   if (!is_valid_) {
     return;
   }
-  std::lock_guard<std::mutex> lock(*bpm_latch_);
   frame_->pin_count_ -= 1;
+  BUSTUB_ASSERT(frame_->pin_count_ == 0, "WritePageGuard frame pin_count must be 0 after dropping the frame");
   frame_->is_write_ = false;
+  is_valid_ = false;
 
-  if (frame_->pin_count_ == 0) {
+  {
+    std::lock_guard<std::mutex> lock(*bpm_latch_);
     replacer_->SetEvictable(frame_->frame_id_, true);
   }
-  is_valid_ = false;
-  bpm_cv_->notify_one();
+  frame_->rwlatch_.unlock();
 }
 
 /** @brief The destructor for `WritePageGuard`. This destructor simply calls `Drop()`. */

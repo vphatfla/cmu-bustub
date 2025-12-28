@@ -189,26 +189,15 @@ auto BufferPoolManager::CheckedWritePage(page_id_t page_id, AccessType access_ty
 
     {
       std::lock_guard<std::mutex> bpm_lock(*bpm_latch_);
-
-      if (frame_source == FrameSource::HIT) {
-        if (!frame->page_id_.has_value() || frame->page_id_.value() != page_id) {
-          frame->rwlatch_.unlock();
-          continue;
-        }
-      } else {
-        if (page_table_.find(page_id) != page_table_.end()) {
-          // two cache misses in parallel, need to re-check if other thread have already acquire the write guard
-          frame->rwlatch_.unlock();
-          frame->Reset();
-          free_frames_.emplace_back(frame->frame_id_);
-          continue;
-        }
-        if (frame->page_id_.has_value()) {
-          page_table_.erase(frame->page_id_.value());
-        }
-        page_table_.insert({page_id, frame->frame_id_});
-        frame->page_id_ = std::make_optional(page_id);
+      if (frame_source == FrameSource::HIT && (!frame->page_id_.has_value() || frame->page_id_.value() != page_id)) {
+        frame->rwlatch_.unlock();
+        continue;
       }
+      if (frame->page_id_.has_value()) {
+        page_table_.erase(frame->page_id_.value());
+      }
+      page_table_.insert(page_id, frame->frame_id_);
+      frame->page_id_ = std::make_optional(page_id);
 
       replacer_->RecordAcessAndSetEvictable(frame->frame_id_, frame->page_id_.value(), false);
     }
@@ -262,35 +251,24 @@ auto BufferPoolManager::CheckedReadPage(page_id_t page_id, AccessType access_typ
 
     {
       std::lock_guard<std::mutex> bpm_lock(*bpm_latch_);
-
-      if (frame_source == FrameSource::HIT) {
-        if (!frame->page_id_.has_value() || frame->page_id_.value() != page_id || frame->is_loading_.load()) {
-          frame->rwlatch_.unlock_shared();
-          continue;
-        }
-      } else {
-        if (page_table_.find(page_id) != page_table_.end()) {
-          // two cache misses in parallel, need to re-check if other thread have already acquire the read guard to avoid
-          // having too diff frame for same page
-          frame->rwlatch_.unlock_shared();
-          frame->Reset();
-          free_frames_.emplace_back(frame->frame_id_);
-          continue;
-        }
-        if (frame->page_id_.has_value()) {
-          page_table_.erase(frame->page_id_.value());
-        }
-        page_table_.insert({page_id, frame->frame_id_});
-        frame->page_id_ = std::make_optional(page_id);
-        frame->is_loading_.store(true);
+      if (frame_source == FrameSource::HIT && (!frame->page_id_.has_value() || frame->page_id_.value() != page_id || frame->is_loading_)) {
+        frame->rwlatch_.unlock_shared();
+        continue;
       }
+      if (frame->page_id_.has_value()) {
+        page_table_.erase(frame->page_id_.value());
+      }
+      page_table_.insert(page_id, frame->frame_id_);
+      frame->page_id_ = std::make_optional(page_id);
 
       replacer_->RecordAcessAndSetEvictable(frame->frame_id_, frame->page_id_.value(), false);
     }
+
     if (frame_source != FrameSource::HIT) {
+      frame->is_loading_ = true;  
       auto future = ScheduleIO(*frame, false, page_id);
       BUSTUB_ASSERT(future.get(), "ScheduleIO must return true");
-      frame->is_loading_.store(false);
+      frame->is_loading_ = false;
     }
 
     return ReadPageGuard(page_id, frame, replacer_, bpm_latch_, disk_scheduler_, bpm_cv_);

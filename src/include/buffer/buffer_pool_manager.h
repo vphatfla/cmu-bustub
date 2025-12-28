@@ -12,6 +12,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <condition_variable>
 #include <future>
 #include <list>
@@ -71,9 +72,10 @@ class FrameHeader {
   bool is_write_;
 
   // @brief this indicates if the frame is currently loading data from/to disk
-  bool is_loading_;
+  std::atomic<bool> is_loading_{false};
 };
 
+enum class FrameSource { HIT, MISS_FREE, MISS_EVICTED };
 /**
  * @brief The declaration of the `BufferPoolManager` class.
  *

@@ -206,6 +206,12 @@ void ArcReplacer::Remove(frame_id_t frame_id) {
   }
 }
 
+void ArcReplacer::RecordAcessAndSetEvictable(frame_id_t frame_id, page_id_t page_id, bool set_evictable,
+                                             [[maybe_unused]] AccessType access_type) {
+  RecordAccess(frame_id, page_id, access_type);
+  SetEvictable(frame_id, set_evictable);
+}
+
 auto ArcReplacer::Size() -> size_t { return curr_size_; }
 
 }  // namespace bustub
