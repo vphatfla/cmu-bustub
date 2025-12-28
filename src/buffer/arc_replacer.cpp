@@ -126,7 +126,7 @@ void ArcReplacer::RecordAccess(frame_id_t frame_id, page_id_t page_id, [[maybe_u
           mru_target_size_ -= delta;
         }
       }
-      mfu_.erase(f_status->list_it_);
+      mfu_ghost_.erase(f_status->list_it_);
     }
     ghost_map_.erase(page_id);
 

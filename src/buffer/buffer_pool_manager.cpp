@@ -191,7 +191,7 @@ auto BufferPoolManager::CheckedWritePage(page_id_t page_id, AccessType access_ty
       std::lock_guard<std::mutex> bpm_lock(*bpm_latch_);
 
       if (frame_source == FrameSource::HIT) {
-        if (!frame->page_id_.has_value() || frame->page_id_.value() != page_id) {
+        if (!frame->page_id_.has_value() || frame->page_id_.value() != page_id || frame->is_loading_.load()) {
           frame->rwlatch_.unlock();
           continue;
         }
@@ -216,6 +216,7 @@ auto BufferPoolManager::CheckedWritePage(page_id_t page_id, AccessType access_ty
     if (frame_source != FrameSource::HIT) {
       auto future = ScheduleIO(*frame, false, page_id);
       BUSTUB_ASSERT(future.get(), "ScheduleIO must return true");
+      frame->is_loading_.store(false);
     }
 
     return WritePageGuard(page_id, frame, replacer_, bpm_latch_, disk_scheduler_, bpm_cv_);
