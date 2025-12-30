@@ -257,6 +257,7 @@ auto BufferPoolManager::CheckedReadPage(page_id_t page_id, AccessType access_typ
       } else {
         return std::nullopt;
       }
+
     }
 
     frame->rwlatch_.lock_shared();
@@ -288,6 +289,8 @@ auto BufferPoolManager::CheckedReadPage(page_id_t page_id, AccessType access_typ
 
       replacer_->RecordAcessAndSetEvictable(frame->frame_id_, frame->page_id_.value(), false);
     }
+
+    // if the frame is a MISS, we must bring the data from disk
     if (frame_source != FrameSource::HIT) {
       auto future = ScheduleIO(*frame, false, page_id);
       BUSTUB_ASSERT(future.get(), "ScheduleIO must return true");

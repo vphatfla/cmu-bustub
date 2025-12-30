@@ -249,11 +249,14 @@ void WritePageGuard::Drop() {
   if (!is_valid_) {
     return;
   }
+  if (frame_->is_dirty_) {
+    Flush();
+  }
+
   frame_->pin_count_ -= 1;
   BUSTUB_ASSERT(frame_->pin_count_ == 0, "WritePageGuard frame pin_count must be 0 after dropping the frame");
   frame_->is_write_ = false;
   is_valid_ = false;
-
   {
     std::lock_guard<std::mutex> lock(*bpm_latch_);
     replacer_->SetEvictable(frame_->frame_id_, true);
