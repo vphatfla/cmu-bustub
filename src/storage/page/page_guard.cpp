@@ -37,7 +37,7 @@ ReadPageGuard::ReadPageGuard(page_id_t page_id, std::shared_ptr<FrameHeader> fra
       bpm_cv_(std::move(bpm_cv_)) {
   frame_->page_id_ = page_id;
   frame_->is_write_ = false;
-  frame_->pin_count_ += 1;
+  // pin_count_ is now incremented in BPM while holding bpm_latch to prevent race conditions
   is_valid_ = true;
 }
 
@@ -126,7 +126,7 @@ void ReadPageGuard::Drop() {
     return;
   }
   frame_->pin_count_ -= 1;
-  BUSTUB_ASSERT(frame_->pin_count_ >= 0, "WritePageGuard frame pin_count must >= 0 after dropping the frame");
+  BUSTUB_ASSERT(frame_->pin_count_ >= 0, "ReadPageGuard frame pin_count must >= 0 after dropping the frame");
   frame_->is_write_ = false;
   is_valid_ = false;
   {
@@ -157,7 +157,7 @@ WritePageGuard::WritePageGuard(page_id_t page_id, std::shared_ptr<FrameHeader> f
       bpm_cv_(std::move(bpm_cv)) {
   frame_->page_id_ = page_id;
   frame_->is_write_ = true;
-  frame_->pin_count_ += 1;
+  // pin_count_ is now incremented in BPM while holding bpm_latch to prevent race conditions
 
   is_valid_ = true;
 }

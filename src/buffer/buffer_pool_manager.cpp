@@ -186,18 +186,21 @@ auto BufferPoolManager::CheckedWritePage(page_id_t page_id, AccessType access_ty
     }
 
     frame->rwlatch_.lock();
+    frame->pin_count_ += 1;
 
     {
       std::lock_guard<std::mutex> bpm_lock(*bpm_latch_);
 
       if (frame_source == FrameSource::HIT) {
         if (!frame->page_id_.has_value() || frame->page_id_.value() != page_id || frame->is_loading_.load()) {
+          frame->pin_count_ -= 1;
           frame->rwlatch_.unlock();
           continue;
         }
       } else {
         if (page_table_.find(page_id) != page_table_.end()) {
           // two cache misses in parallel, need to re-check if other thread have already acquire the write guard
+          frame->pin_count_ -= 1;
           frame->rwlatch_.unlock();
           frame->Reset();
           free_frames_.emplace_back(frame->frame_id_);
@@ -261,12 +264,13 @@ auto BufferPoolManager::CheckedReadPage(page_id_t page_id, AccessType access_typ
     }
 
     frame->rwlatch_.lock_shared();
-
+    frame->pin_count_ += 1;
     {
       std::lock_guard<std::mutex> bpm_lock(*bpm_latch_);
 
       if (frame_source == FrameSource::HIT) {
         if (!frame->page_id_.has_value() || frame->page_id_.value() != page_id || frame->is_loading_.load()) {
+            frame->pin_count_ -= 1;
           frame->rwlatch_.unlock_shared();
           continue;
         }
@@ -274,6 +278,7 @@ auto BufferPoolManager::CheckedReadPage(page_id_t page_id, AccessType access_typ
         if (page_table_.find(page_id) != page_table_.end()) {
           // two cache misses in parallel, need to re-check if other thread have already acquire the read guard to avoid
           // having too diff frame for same page
+          frame->pin_count_ -= 1;
           frame->rwlatch_.unlock_shared();
           frame->Reset();
           free_frames_.emplace_back(frame->frame_id_);
