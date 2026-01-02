@@ -249,9 +249,9 @@ void WritePageGuard::Drop() {
   if (!is_valid_) {
     return;
   }
-  if (frame_->is_dirty_) {
+  /* if (frame_->is_dirty_) {
     Flush();
-  }
+  } */
 
   frame_->pin_count_ -= 1;
   BUSTUB_ASSERT(frame_->pin_count_ == 0, "WritePageGuard frame pin_count must be 0 after dropping the frame");

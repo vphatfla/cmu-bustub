@@ -392,9 +392,9 @@ TEST(BufferPoolManagerTest, EvictableTest) {
         const auto read_guard = bpm->ReadPage(winner_pid);
 
         // Since the only frame is pinned, no thread should be able to bring in a new page.
-        const auto loser_read_guard = bpm->CheckedReadPage(loser_pid); 
+        const auto loser_read_guard = bpm->CheckedReadPage(loser_pid);
         if (loser_read_guard.has_value()) {
-            std::cout << read_guard.GetData() << std::endl;
+          std::cout << read_guard.GetData() << std::endl;
         }
         ASSERT_FALSE(loser_read_guard.has_value());
       });
