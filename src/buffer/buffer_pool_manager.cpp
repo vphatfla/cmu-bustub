@@ -180,6 +180,9 @@ auto BufferPoolManager::CheckedWritePage(page_id_t page_id, AccessType access_ty
       } else if (auto eid = replacer_->Evict(); eid.has_value()) {
         frame = GetFrameHeaderByID(eid.value());
         frame_source = FrameSource::MISS_EVICTED;
+        if (frame->page_id_.has_value()) {
+          page_table_.erase(frame->page_id_.value());
+        }
       } else {
         return std::nullopt;
       }
@@ -192,7 +195,9 @@ auto BufferPoolManager::CheckedWritePage(page_id_t page_id, AccessType access_ty
       std::lock_guard<std::mutex> bpm_lock(*bpm_latch_);
 
       if (frame_source == FrameSource::HIT) {
-        if (!frame->page_id_.has_value() || frame->page_id_.value() != page_id || frame->is_loading_.load()) {
+        auto it = page_table_.find(page_id);
+        if (it == page_table_.end() || it->second != frame->frame_id_ || !frame->page_id_.has_value() ||
+            frame->page_id_.value() != page_id || frame->is_loading_.load()) {
           frame->pin_count_ -= 1;
           frame->rwlatch_.unlock();
           continue;
@@ -208,12 +213,13 @@ auto BufferPoolManager::CheckedWritePage(page_id_t page_id, AccessType access_ty
         }
 
         if (frame->is_dirty_ && frame->page_id_.has_value()) {
-          FlushPageUnsafe(frame->page_id_.value());
+          frame->is_loading_ = true;
+          auto future = ScheduleIO(*frame, true, frame->page_id_.value());
+          BUSTUB_ASSERT(future.get(), "ScheduleIO must return true");
+          frame->is_loading_ = false;
+          frame->is_dirty_ = false;
         }
 
-        if (frame->page_id_.has_value()) {
-          page_table_.erase(frame->page_id_.value());
-        }
         page_table_.insert({page_id, frame->frame_id_});
         frame->page_id_ = std::make_optional(page_id);
       }
@@ -262,6 +268,9 @@ auto BufferPoolManager::CheckedReadPage(page_id_t page_id, AccessType access_typ
       } else if (auto eid = replacer_->Evict(); eid.has_value()) {
         frame = GetFrameHeaderByID(eid.value());
         frame_source = FrameSource::MISS_EVICTED;
+        if (frame->page_id_.has_value()) {
+          page_table_.erase(frame->page_id_.value());
+        }
       } else {
         return std::nullopt;
       }
@@ -273,7 +282,9 @@ auto BufferPoolManager::CheckedReadPage(page_id_t page_id, AccessType access_typ
       std::lock_guard<std::mutex> bpm_lock(*bpm_latch_);
 
       if (frame_source == FrameSource::HIT) {
-        if (!frame->page_id_.has_value() || frame->page_id_.value() != page_id || frame->is_loading_.load()) {
+        auto it = page_table_.find(page_id);
+        if (it == page_table_.end() || it->second != frame->frame_id_ || !frame->page_id_.has_value() ||
+            frame->page_id_.value() != page_id || frame->is_loading_.load()) {
           frame->pin_count_ -= 1;
           frame->rwlatch_.unlock_shared();
           continue;
@@ -289,10 +300,11 @@ auto BufferPoolManager::CheckedReadPage(page_id_t page_id, AccessType access_typ
           continue;
         }
         if (frame->is_dirty_ && frame->page_id_.has_value()) {
-          FlushPageUnsafe(frame->page_id_.value());
-        }
-        if (frame->page_id_.has_value()) {
-          page_table_.erase(frame->page_id_.value());
+          frame->is_loading_ = true;
+          auto future = ScheduleIO(*frame, true, frame->page_id_.value());
+          BUSTUB_ASSERT(future.get(), "ScheduleIO must return true");
+          frame->is_loading_ = false;
+          frame->is_dirty_ = false;
         }
         page_table_.insert({page_id, frame->frame_id_});
         frame->page_id_ = std::make_optional(page_id);
