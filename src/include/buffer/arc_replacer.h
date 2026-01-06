@@ -52,10 +52,6 @@ class ArcReplacer {
   // @brief Return the number of eictable frames that currently in the ArcReplacer
   auto Size() -> size_t;
 
-  // @brief Atomic operation to record access and set evictable for a frame
-  void RecordAcessAndSetEvictable(frame_id_t frame_id, page_id_t page_id, bool set_evictable,
-                                  AccessType access_type = AccessType::Unknown);
-
  private:
   std::list<frame_id_t> mru_;
   std::list<frame_id_t> mfu_;

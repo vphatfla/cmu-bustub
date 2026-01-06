@@ -70,9 +70,6 @@ class FrameHeader {
 
   // @brief is this frame hold by a WRITEPAGEGUARD
   bool is_write_;
-
-  // @brief this indicates if the frame is currently loading data from/to disk
-  std::atomic<bool> is_loading_{false};
 };
 
 enum class FrameSource { HIT, MISS_FREE, MISS_EVICTED };

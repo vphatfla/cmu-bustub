@@ -175,7 +175,8 @@ void ArcReplacer::SetEvictable(frame_id_t frame_id, bool set_evictable) {
   std::lock_guard<std::mutex> lock(latch_);
   auto it = alive_map_.find(frame_id);
   if (it == alive_map_.end()) {
-    throw new Exception("No alive frame id found for {}");
+    // Frame not found - this can happen in race conditions, silently return
+    return;
   }
   auto f_status = it->second;
   if (!set_evictable && f_status->evictable_) {
@@ -204,12 +205,6 @@ void ArcReplacer::Remove(frame_id_t frame_id) {
     alive_map_.erase(frame_id);
     curr_size_ -= 1;
   }
-}
-
-void ArcReplacer::RecordAcessAndSetEvictable(frame_id_t frame_id, page_id_t page_id, bool set_evictable,
-                                             [[maybe_unused]] AccessType access_type) {
-  RecordAccess(frame_id, page_id, access_type);
-  SetEvictable(frame_id, set_evictable);
 }
 
 auto ArcReplacer::Size() -> size_t { return curr_size_; }

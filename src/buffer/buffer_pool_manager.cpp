@@ -50,7 +50,7 @@ auto FrameHeader::GetData() const -> const char * { return data_.data(); }
  * @return char* A pointer to mutable data that the frame stores.
  */
 auto FrameHeader::GetDataMut() -> char * {
-  is_dirty_ = true;  // return raw ptr that can be mutable, then set is_dirty =  true
+  is_dirty_ = true;
   return data_.data();
 }
 
@@ -61,6 +61,7 @@ void FrameHeader::Reset() {
   std::fill(data_.begin(), data_.end(), 0);
   pin_count_.store(0);
   is_dirty_ = false;
+  page_id_ = std::nullopt;
 }
 
 BufferPoolManager::BufferPoolManager(size_t num_frames, DiskManager *disk_manager, LogManager *log_manager)
@@ -110,12 +111,7 @@ auto BufferPoolManager::Size() const -> size_t { return num_frames_; }
  * See the documentation on [atomics](https://en.cppreference.com/w/cpp/atomic/atomic) for more information.
  *
  */
-auto BufferPoolManager::NewPage() -> page_id_t {
-  /* std::lock_guard<std::mutex> lock(*bpm_latch_);
-  auto next_page = next_page_id_ ++; */
-
-  return next_page_id_++;
-}
+auto BufferPoolManager::NewPage() -> page_id_t { return next_page_id_++; }
 
 /**
  * @brief Removes a page from the database, both on disk and in memory.
@@ -132,9 +128,6 @@ auto BufferPoolManager::DeletePage(page_id_t page_id) -> bool {
   std::lock_guard<std::mutex> lock(*bpm_latch_);
   if (auto it = page_table_.find(page_id); it != page_table_.end()) {
     auto frame = GetFrameHeaderByID(it->second);
-    if (frame->is_loading_) {
-      return false;
-    }
     replacer_->SetEvictable(frame->frame_id_, true);
     replacer_->Remove(frame->frame_id_);
     frame->Reset();
@@ -142,7 +135,6 @@ auto BufferPoolManager::DeletePage(page_id_t page_id) -> bool {
     page_table_.erase(page_id);
     free_frames_.emplace_back(frame->frame_id_);
   }
-  // remove from disk: from diskschduler
   disk_scheduler_->DeallocatePage(page_id);
   return true;
 }
@@ -162,80 +154,74 @@ auto BufferPoolManager::DeletePage(page_id_t page_id) -> bool {
  * with `CheckedReadPage` instead.
  *
  */
-
 auto BufferPoolManager::CheckedWritePage(page_id_t page_id, AccessType access_type) -> std::optional<WritePageGuard> {
+  std::shared_ptr<FrameHeader> frame;
   FrameSource frame_source;
-  while (true) {
-    std::shared_ptr<FrameHeader> frame;
 
-    {
-      std::lock_guard<std::mutex> bpm_lock(*bpm_latch_);
+  {
+    std::lock_guard<std::mutex> bpm_lock(*bpm_latch_);
 
-      if (auto it = page_table_.find(page_id); it != page_table_.end()) {
-        frame = GetFrameHeaderByID(it->second);
-        frame_source = FrameSource::HIT;
-      } else if (auto fid = GetFreeFrameID(); fid.has_value()) {
-        frame = GetFrameHeaderByID(fid.value());
-        frame_source = FrameSource::MISS_FREE;
-      } else if (auto eid = replacer_->Evict(); eid.has_value()) {
-        frame = GetFrameHeaderByID(eid.value());
-        frame_source = FrameSource::MISS_EVICTED;
-        if (frame->page_id_.has_value()) {
-          page_table_.erase(frame->page_id_.value());
-        }
-      } else {
-        return std::nullopt;
+    // 1. Find a frame (hit, free, or evict)
+    if (auto it = page_table_.find(page_id); it != page_table_.end()) {
+      frame = GetFrameHeaderByID(it->second);
+      frame_source = FrameSource::HIT;
+    } else if (auto fid = GetFreeFrameID(); fid.has_value()) {
+      frame = GetFrameHeaderByID(fid.value());
+      frame_source = FrameSource::MISS_FREE;
+    } else if (auto eid = replacer_->Evict(); eid.has_value()) {
+      frame = GetFrameHeaderByID(eid.value());
+      frame_source = FrameSource::MISS_EVICTED;
+      if (frame->page_id_.has_value()) {
+        page_table_.erase(frame->page_id_.value());
       }
+    } else {
+      return std::nullopt;
     }
 
-    frame->rwlatch_.lock();
-    frame->pin_count_ += 1;
-
-    {
-      std::lock_guard<std::mutex> bpm_lock(*bpm_latch_);
-
-      if (frame_source == FrameSource::HIT) {
-        auto it = page_table_.find(page_id);
-        if (it == page_table_.end() || it->second != frame->frame_id_ || !frame->page_id_.has_value() ||
-            frame->page_id_.value() != page_id || frame->is_loading_.load()) {
-          frame->pin_count_ -= 1;
-          frame->rwlatch_.unlock();
-          continue;
-        }
-      } else {
-        if (page_table_.find(page_id) != page_table_.end()) {
-          // two cache misses in parallel, need to re-check if other thread have already acquire the write guard
-          frame->pin_count_ -= 1;
-          frame->rwlatch_.unlock();
-          frame->Reset();
-          free_frames_.emplace_back(frame->frame_id_);
-          continue;
-        }
-
-        if (frame->is_dirty_ && frame->page_id_.has_value()) {
-          frame->is_loading_ = true;
-          auto future = ScheduleIO(*frame, true, frame->page_id_.value());
-          BUSTUB_ASSERT(future.get(), "ScheduleIO must return true");
-          frame->is_loading_ = false;
-          frame->is_dirty_ = false;
-        }
-
-        page_table_.insert({page_id, frame->frame_id_});
-        frame->page_id_ = std::make_optional(page_id);
-      }
-
-      replacer_->RecordAcessAndSetEvictable(frame->frame_id_, frame->page_id_.value(), false);
-    }
-
+    // 2. For MISS cases, do everything under bpm_latch
     if (frame_source != FrameSource::HIT) {
+      // Acquire rwlatch - should succeed immediately since we just got the frame
+      frame->rwlatch_.lock();
+
+      // Flush the old dirty page if necessary
+      if (frame->is_dirty_ && frame->page_id_.has_value()) {
+        auto future = ScheduleIO(*frame, true, frame->page_id_.value());
+        BUSTUB_ASSERT(future.get(), "ScheduleIO must return true");
+        frame->is_dirty_ = false;
+      }
+
+      // Update page table with new mapping
+      page_table_.insert({page_id, frame->frame_id_});
+
+      // Set all frame properties
+      frame->page_id_ = std::make_optional(page_id);
+      frame->is_write_ = true;
+      frame->pin_count_ += 1;
+
+      // Load page data from disk
       auto future = ScheduleIO(*frame, false, page_id);
       BUSTUB_ASSERT(future.get(), "ScheduleIO must return true");
-      frame->is_loading_.store(false);
+
+      replacer_->RecordAccess(frame->frame_id_, page_id);
+      replacer_->SetEvictable(frame->frame_id_, false);
+
+      // Return guard - bpm_latch released, rwlatch held
+      return WritePageGuard(page_id, frame, replacer_, bpm_latch_, disk_scheduler_, bpm_cv_);
     }
 
-    return WritePageGuard(page_id, frame, replacer_, bpm_latch_, disk_scheduler_, bpm_cv_);
+    // 3. For HIT case, set properties under bpm_latch to prevent eviction
+    frame->is_write_ = true;
+    frame->pin_count_ += 1;
+    replacer_->RecordAccess(frame->frame_id_, page_id);
+    replacer_->SetEvictable(frame->frame_id_, false);
   }
-};
+  // bpm_latch_ released here - frame can't be evicted because evictable=false and pin_count > 0
+
+  // 4. For HIT case, acquire rwlatch without holding bpm_latch (may block)
+  frame->rwlatch_.lock();
+
+  return WritePageGuard(page_id, frame, replacer_, bpm_latch_, disk_scheduler_, bpm_cv_);
+}
 
 /**
  * @brief Acquires an optional read-locked guard over a page of data. The user can specify an `AccessType` if needed.
@@ -252,78 +238,77 @@ auto BufferPoolManager::CheckedWritePage(page_id_t page_id, AccessType access_ty
  *
  */
 auto BufferPoolManager::CheckedReadPage(page_id_t page_id, AccessType access_type) -> std::optional<ReadPageGuard> {
+  std::shared_ptr<FrameHeader> frame;
   FrameSource frame_source;
-  while (true) {
-    std::shared_ptr<FrameHeader> frame;
 
-    {
-      std::lock_guard<std::mutex> bpm_lock(*bpm_latch_);
+  {
+    std::lock_guard<std::mutex> bpm_lock(*bpm_latch_);
 
-      if (auto it = page_table_.find(page_id); it != page_table_.end()) {
-        frame = GetFrameHeaderByID(it->second);
-        frame_source = FrameSource::HIT;
-      } else if (auto fid = GetFreeFrameID(); fid.has_value()) {
-        frame = GetFrameHeaderByID(fid.value());
-        frame_source = FrameSource::MISS_FREE;
-      } else if (auto eid = replacer_->Evict(); eid.has_value()) {
-        frame = GetFrameHeaderByID(eid.value());
-        frame_source = FrameSource::MISS_EVICTED;
-        if (frame->page_id_.has_value()) {
-          page_table_.erase(frame->page_id_.value());
-        }
-      } else {
-        return std::nullopt;
+    // 1. Find a frame (hit, free, or evict)
+    if (auto it = page_table_.find(page_id); it != page_table_.end()) {
+      frame = GetFrameHeaderByID(it->second);
+      frame_source = FrameSource::HIT;
+    } else if (auto fid = GetFreeFrameID(); fid.has_value()) {
+      frame = GetFrameHeaderByID(fid.value());
+      frame_source = FrameSource::MISS_FREE;
+    } else if (auto eid = replacer_->Evict(); eid.has_value()) {
+      frame = GetFrameHeaderByID(eid.value());
+      frame_source = FrameSource::MISS_EVICTED;
+      if (frame->page_id_.has_value()) {
+        page_table_.erase(frame->page_id_.value());
       }
+    } else {
+      return std::nullopt;
     }
 
-    frame->rwlatch_.lock_shared();
-    frame->pin_count_ += 1;
-    {
-      std::lock_guard<std::mutex> bpm_lock(*bpm_latch_);
-
-      if (frame_source == FrameSource::HIT) {
-        auto it = page_table_.find(page_id);
-        if (it == page_table_.end() || it->second != frame->frame_id_ || !frame->page_id_.has_value() ||
-            frame->page_id_.value() != page_id || frame->is_loading_.load()) {
-          frame->pin_count_ -= 1;
-          frame->rwlatch_.unlock_shared();
-          continue;
-        }
-      } else {
-        if (page_table_.find(page_id) != page_table_.end()) {
-          // two cache misses in parallel, need to re-check if other thread have already acquire the read guard to avoid
-          // having too diff frame for same page
-          frame->pin_count_ -= 1;
-          frame->rwlatch_.unlock_shared();
-          frame->Reset();
-          free_frames_.emplace_back(frame->frame_id_);
-          continue;
-        }
-        if (frame->is_dirty_ && frame->page_id_.has_value()) {
-          frame->is_loading_ = true;
-          auto future = ScheduleIO(*frame, true, frame->page_id_.value());
-          BUSTUB_ASSERT(future.get(), "ScheduleIO must return true");
-          frame->is_loading_ = false;
-          frame->is_dirty_ = false;
-        }
-        page_table_.insert({page_id, frame->frame_id_});
-        frame->page_id_ = std::make_optional(page_id);
-        frame->is_loading_.store(true);
-      }
-
-      replacer_->RecordAcessAndSetEvictable(frame->frame_id_, frame->page_id_.value(), false);
-    }
-
-    // if the frame is a MISS, we must bring the data from disk
+    // 2. For MISS cases, do everything under bpm_latch
     if (frame_source != FrameSource::HIT) {
+      // Acquire EXCLUSIVE lock for loading - prevents other threads from reading incomplete data
+      frame->rwlatch_.lock();
+
+      // Flush the old dirty page if necessary
+      if (frame->is_dirty_ && frame->page_id_.has_value()) {
+        auto future = ScheduleIO(*frame, true, frame->page_id_.value());
+        BUSTUB_ASSERT(future.get(), "ScheduleIO must return true");
+        frame->is_dirty_ = false;
+      }
+
+      // Update page table with new mapping
+      page_table_.insert({page_id, frame->frame_id_});
+
+      // Set all frame properties
+      frame->page_id_ = std::make_optional(page_id);
+      frame->is_write_ = false;
+      frame->pin_count_ += 1;
+
+      // Load page data from disk
       auto future = ScheduleIO(*frame, false, page_id);
       BUSTUB_ASSERT(future.get(), "ScheduleIO must return true");
-      frame->is_loading_.store(false);
+
+      replacer_->RecordAccess(frame->frame_id_, page_id);
+      replacer_->SetEvictable(frame->frame_id_, false);
+
+      // Downgrade from exclusive to shared lock before returning ReadPageGuard
+      frame->rwlatch_.unlock();
+      frame->rwlatch_.lock_shared();
+
+      // Return guard - bpm_latch released, shared rwlatch held
+      return ReadPageGuard(page_id, frame, replacer_, bpm_latch_, disk_scheduler_, bpm_cv_);
     }
 
-    return ReadPageGuard(page_id, frame, replacer_, bpm_latch_, disk_scheduler_, bpm_cv_);
+    // 3. For HIT case, set properties under bpm_latch to prevent eviction
+    frame->is_write_ = false;
+    frame->pin_count_ += 1;
+    replacer_->RecordAccess(frame->frame_id_, page_id);
+    replacer_->SetEvictable(frame->frame_id_, false);
   }
-};
+  // bpm_latch_ released here - frame can't be evicted because evictable=false and pin_count > 0
+
+  // 4. For HIT case, acquire rwlatch without holding bpm_latch (may block)
+  frame->rwlatch_.lock_shared();
+
+  return ReadPageGuard(page_id, frame, replacer_, bpm_latch_, disk_scheduler_, bpm_cv_);
+}
 
 /**
  * @brief A wrapper around `CheckedWritePage` that unwraps the inner value if it exists.
@@ -401,10 +386,8 @@ auto BufferPoolManager::FlushPageUnsafe(page_id_t page_id) -> bool {
     return true;
   }
 
-  frame->is_loading_ = true;
   auto future = ScheduleIO(*frame, true, page_id);
   BUSTUB_ASSERT(future.get(), "SCHEDULE IO must return TRUE");
-  frame->is_loading_ = false;
 
   frame->is_dirty_ = false;
   return true;
@@ -437,13 +420,11 @@ auto BufferPoolManager::FlushPage(page_id_t page_id) -> bool {
   lock.unlock();
   frame->rwlatch_.lock();
   if (!frame->page_id_.has_value() || frame->page_id_ != page_id) {
-    // page does not exist any more
+    frame->rwlatch_.unlock();
     return false;
   }
-  frame->is_loading_ = true;
   auto future = ScheduleIO(*frame, true, page_id);
   BUSTUB_ASSERT(future.get(), "SCHEDULE IO must return TRUE");
-  frame->is_loading_ = false;
   frame->is_dirty_ = false;
 
   frame->rwlatch_.unlock();
@@ -562,12 +543,10 @@ auto BufferPoolManager::GetFrameHeaderByID(frame_id_t fid) -> std::shared_ptr<Fr
   return frames_.at(fid);
 }
 
-// NOLINTNEXTLINE(readability-non-const-parameter)
 auto BufferPoolManager::ScheduleIO(FrameHeader &frame, const bool &is_write, const page_id_t &page_id)
     -> std::future<bool> {
   std::promise<bool> promise;
   std::future<bool> future = promise.get_future();
-  frame.is_loading_ = true;
   auto request = DiskRequest{
       .is_write_ = is_write, .data_ = frame.data_.data(), .page_id_ = page_id, .callback_ = std::move(promise)};
   auto requests = std::vector<DiskRequest>{};
