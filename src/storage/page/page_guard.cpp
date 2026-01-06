@@ -114,7 +114,7 @@ void ReadPageGuard::Flush() {
   disk_scheduler_->Schedule(requests);
   try {
     bool res = f.get();
-    BUSTUB_ASSERT(res, "Result of flush must be TRUE");
+    BUSTUB_ENSURE(res, "Result of flush must be TRUE");
     frame_->is_dirty_ = false;
   } catch (...) {
     throw Exception("Something went wrong when flush page to disk");
@@ -133,7 +133,7 @@ void ReadPageGuard::Drop() {
   {
     std::lock_guard<std::mutex> lock(*bpm_latch_);
     frame_->pin_count_ -= 1;
-    BUSTUB_ASSERT(frame_->pin_count_ >= 0, "ReadPageGuard frame pin_count must >= 0 after dropping the frame");
+    BUSTUB_ENSURE(frame_->pin_count_ >= 0, "ReadPageGuard frame pin_count must >= 0 after dropping the frame");
     if (frame_->pin_count_ == 0) {
       replacer_->SetEvictable(frame_->frame_id_, true);
     }
@@ -240,7 +240,7 @@ void WritePageGuard::Flush() {
   disk_scheduler_->Schedule(requests);
   try {
     bool res = f.get();
-    BUSTUB_ASSERT(res, "Result of flush must be TRUE");
+    BUSTUB_ENSURE(res, "Result of flush must be TRUE");
     frame_->is_dirty_ = false;
   } catch (...) {
     throw Exception("Something went wrong when flush page to disk");
@@ -258,8 +258,14 @@ void WritePageGuard::Drop() {
 
   {
     std::lock_guard<std::mutex> lock(*bpm_latch_);
+    if (frame_->is_dirty_) {
+      // this mean somehow is holdig the data stream pointer, but it is drop(), hence we must write the remainning data
+      // to the disk, and keep the frame_->is_dirty to true since the stream pointer can still be written?
+      Flush();
+      frame_->is_dirty_ = true;
+    }
     frame_->pin_count_ -= 1;
-    BUSTUB_ASSERT(frame_->pin_count_ >= 0, "WritePageGuard frame pin_count must be >= 0 after dropping the frame");
+    BUSTUB_ENSURE(frame_->pin_count_ >= 0, "WritePageGuard frame pin_count must be >= 0 after dropping the frame");
     if (frame_->pin_count_ == 0) {
       replacer_->SetEvictable(frame_->frame_id_, true);
     }

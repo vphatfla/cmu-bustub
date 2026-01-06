@@ -186,21 +186,21 @@ auto BufferPoolManager::CheckedWritePage(page_id_t page_id, AccessType access_ty
       // Flush the old dirty page if necessary
       if (frame->is_dirty_ && frame->page_id_.has_value()) {
         auto future = ScheduleIO(*frame, true, frame->page_id_.value());
-        BUSTUB_ASSERT(future.get(), "ScheduleIO must return true");
+        BUSTUB_ENSURE(future.get(), "ScheduleIO must return true");
         frame->is_dirty_ = false;
       }
 
-      // Update page table with new mapping
-      page_table_.insert({page_id, frame->frame_id_});
-
-      // Set all frame properties
+      // Set frame properties before loading
       frame->page_id_ = std::make_optional(page_id);
       frame->is_write_ = true;
       frame->pin_count_ += 1;
 
-      // Load page data from disk
+      // Load page data from disk BEFORE making visible in page table
       auto future = ScheduleIO(*frame, false, page_id);
-      BUSTUB_ASSERT(future.get(), "ScheduleIO must return true");
+      BUSTUB_ENSURE(future.get(), "ScheduleIO must return true");
+
+      // Update page table with new mapping AFTER data is loaded
+      page_table_.insert({page_id, frame->frame_id_});
 
       replacer_->RecordAccess(frame->frame_id_, page_id);
       replacer_->SetEvictable(frame->frame_id_, false);
@@ -269,21 +269,21 @@ auto BufferPoolManager::CheckedReadPage(page_id_t page_id, AccessType access_typ
       // Flush the old dirty page if necessary
       if (frame->is_dirty_ && frame->page_id_.has_value()) {
         auto future = ScheduleIO(*frame, true, frame->page_id_.value());
-        BUSTUB_ASSERT(future.get(), "ScheduleIO must return true");
+        BUSTUB_ENSURE(future.get(), "ScheduleIO must return true");
         frame->is_dirty_ = false;
       }
 
-      // Update page table with new mapping
-      page_table_.insert({page_id, frame->frame_id_});
-
-      // Set all frame properties
+      // Set frame properties before loading
       frame->page_id_ = std::make_optional(page_id);
       frame->is_write_ = false;
       frame->pin_count_ += 1;
 
-      // Load page data from disk
+      // Load page data from disk BEFORE making visible in page table
       auto future = ScheduleIO(*frame, false, page_id);
-      BUSTUB_ASSERT(future.get(), "ScheduleIO must return true");
+      BUSTUB_ENSURE(future.get(), "ScheduleIO must return true");
+
+      // Update page table with new mapping AFTER data is loaded
+      page_table_.insert({page_id, frame->frame_id_});
 
       replacer_->RecordAccess(frame->frame_id_, page_id);
       replacer_->SetEvictable(frame->frame_id_, false);
@@ -387,7 +387,7 @@ auto BufferPoolManager::FlushPageUnsafe(page_id_t page_id) -> bool {
   }
 
   auto future = ScheduleIO(*frame, true, page_id);
-  BUSTUB_ASSERT(future.get(), "SCHEDULE IO must return TRUE");
+  BUSTUB_ENSURE(future.get(), "SCHEDULE IO must return TRUE");
 
   frame->is_dirty_ = false;
   return true;
@@ -424,7 +424,7 @@ auto BufferPoolManager::FlushPage(page_id_t page_id) -> bool {
     return false;
   }
   auto future = ScheduleIO(*frame, true, page_id);
-  BUSTUB_ASSERT(future.get(), "SCHEDULE IO must return TRUE");
+  BUSTUB_ENSURE(future.get(), "SCHEDULE IO must return TRUE");
   frame->is_dirty_ = false;
 
   frame->rwlatch_.unlock();
@@ -443,7 +443,7 @@ void BufferPoolManager::FlushAllPagesUnsafe() {
   auto futures = std::vector<std::future<bool>>{};
   for (const auto &frame : frames_) {
     if (frame->is_dirty_) {
-      BUSTUB_ASSERT(frame->page_id_.has_value(), "DIRTY frame must have a page id field");
+      BUSTUB_ENSURE(frame->page_id_.has_value(), "DIRTY frame must have a page id field");
       auto p = std::promise<bool>{};
       auto f = p.get_future();
       futures.emplace_back(std::move(f));
@@ -462,7 +462,7 @@ void BufferPoolManager::FlushAllPagesUnsafe() {
   for (auto &f : futures) {
     try {
       auto res = f.get();
-      BUSTUB_ASSERT(res, "result of promise-future flush must be TRUE");
+      BUSTUB_ENSURE(res, "result of promise-future flush must be TRUE");
     } catch (...) {
       throw std::runtime_error("FLUSH error");
     }
@@ -481,7 +481,7 @@ void BufferPoolManager::FlushAllPages() {
   auto futures = std::vector<std::future<bool>>{};
   for (const auto &frame : frames_) {
     if (frame->is_dirty_) {
-      BUSTUB_ASSERT(frame->page_id_.has_value(), "DIRTY frame must have a page id field");
+      BUSTUB_ENSURE(frame->page_id_.has_value(), "DIRTY frame must have a page id field");
       auto p = std::promise<bool>{};
       auto f = p.get_future();
       futures.emplace_back(std::move(f));
@@ -500,7 +500,7 @@ void BufferPoolManager::FlushAllPages() {
   for (auto &f : futures) {
     try {
       auto res = f.get();
-      BUSTUB_ASSERT(res, "result of promise-future flush must be TRUE");
+      BUSTUB_ENSURE(res, "result of promise-future flush must be TRUE");
     } catch (...) {
       throw std::runtime_error("FLUSH error");
     }
