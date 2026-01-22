@@ -4,102 +4,170 @@
 
 ---
 
-## Project Specification
+## Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    BPlusTree (b_plus_tree.h/cpp)            │
+│         Insert() / Remove() / GetValue() / Begin()         │
+│                    (Tree operations logic)                  │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│                      Page Classes                           │
+│              (Data containers - just accessors)             │
+│                                                             │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────┐ │
+│  │ BPlusTreePage   │  │ InternalPage    │  │ LeafPage    │ │
+│  │ (base class)    │◄─┤ (keys + ptrs)   │  │ (keys+vals) │ │
+│  │                 │  └─────────────────┘  └─────────────┘ │
+│  └─────────────────┘                                        │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│                   BufferPoolManager                         │
+│            FetchPage() / NewPage() / UnpinPage()           │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Key insight:** Page classes are just data containers with accessors. BPlusTree class implements all tree logic (insert, delete, split, merge, redistribute).
+
+---
+
+## File Locations
+
+| Component | Header | Source |
+|-----------|--------|--------|
+| Base Page | `src/include/storage/page/b_plus_tree_page.h` | `src/storage/page/b_plus_tree_page.cpp` |
+| Internal Page | `src/include/storage/page/b_plus_tree_internal_page.h` | `src/storage/page/b_plus_tree_internal_page.cpp` |
+| Leaf Page | `src/include/storage/page/b_plus_tree_leaf_page.h` | `src/storage/page/b_plus_tree_leaf_page.cpp` |
+| B+ Tree | `src/include/storage/index/b_plus_tree.h` | `src/storage/index/b_plus_tree.cpp` |
+| Iterator | `src/include/storage/index/index_iterator.h` | `src/storage/index/index_iterator.cpp` |
+
+---
+
+## Page Specifications
 
 ### Base Page (BPlusTreePage)
-- **Files**: `b_plus_tree_page.h`, `b_plus_tree_page.cpp`
-- **Header (12 bytes)**:
-  | Field | Size | Description |
-  |-------|------|-------------|
-  | page_type_ | 4 | invalid / leaf / internal |
-  | size_ | 4 | Number of key/value pairs |
-  | max_size_ | 4 | Max key/value pairs |
-
----
+**Header: 12 bytes**
+| Field | Size | Description |
+|-------|------|-------------|
+| page_type_ | 4 | INVALID_INDEX_PAGE / LEAF_PAGE / INTERNAL_PAGE |
+| size_ | 4 | Number of key/value pairs |
+| max_size_ | 4 | Max key/value pairs |
 
 ### Internal Page
-- **Files**: `b_plus_tree_internal_page.h`, `b_plus_tree_internal_page.cpp`
-- Stores **m ordered keys** and **m+1 child pointers** (page_ids)
-- Represented as array of key/page_id pairs
-- **IMPORTANT**: First key in `key_array_` is INVALID - lookups start from second key
-- Must be at least **half full** at all times
-- Operations: merge, redistribute, split
-
-**Layout:**
-```
-key_array_:     [INVALID] [key1] [key2] ... [key_n-1]
-page_id_array_: [ptr0]    [ptr1] [ptr2] ... [ptr_n-1]
-```
-- n keys stored, but key[0] is invalid
-- n pointers stored
-- size_ = n (number of entries)
-
----
+- Stores **n keys** and **n child pointers** (page_ids)
+- **key[0] is INVALID** - lookups start from index 1
+- Layout:
+  ```
+  key_array_:     [INVALID] [key1] [key2] ... [key_n-1]
+  page_id_array_: [ptr0]    [ptr1] [ptr2] ... [ptr_n-1]
+  ```
+- Invariant: `K(i) <= keys_in_subtree(ptr_i) < K(i+1)`
 
 ### Leaf Page
-- **Files**: `b_plus_tree_leaf_page.h`, `b_plus_tree_leaf_page.cpp`
-- Stores **m ordered keys** and **m corresponding values**
-- Values are **64-bit RIDs** (record ids) - see `src/include/common/rid.h`
-- Same half-full restrictions as internal pages
-
-#### Tombstone Buffer (Bε-tree concept)
-- Stores last **k indexes** of deleted entries
-- When key is deleted (if k > 0):
-  - Entry is NOT actually removed
-  - Index is appended to tombstone buffer
-- When buffer has k entries:
-  - Oldest buffered deletion is actually applied to key/value arrays
-- **GetTombstones()**: Returns keys that tombstones correspond to
-- **KeyAt()**: Returns physical entry at index (regardless of tombstone status)
+- Stores **m keys** and **m values** (RIDs)
+- Values are 64-bit record IDs (see `src/include/common/rid.h`)
+- **Tombstone buffer** for lazy deletion (Bε-tree concept):
+  - Stores last k indexes of deleted entries
+  - Deletion appends to buffer instead of removing
+  - When buffer full, oldest deletion applied
 
 ---
 
-### Key Implementation Notes
-1. Leaf and Internal pages have **same key type but different value types**
-2. `max_size` can differ between leaf and internal pages
-3. Pages correspond to `data_` part of memory page from buffer pool
-4. **Usage pattern**:
-   - Fetch page from buffer pool (using page_id)
-   - `reinterpret_cast` to leaf or internal page
-   - Read/write operations
-   - Unpin page after use
+## Template Macros
+
+```cpp
+// Shorthand for template declarations
+#define INDEX_TEMPLATE_ARGUMENTS \
+  template <typename KeyType, typename ValueType, typename KeyComparator>
+
+// Usage:
+INDEX_TEMPLATE_ARGUMENTS
+auto BPlusTreeInternalPage<...>::KeyAt(int index) -> KeyType { ... }
+```
+
+| Parameter | Purpose |
+|-----------|---------|
+| KeyType | Key type (e.g., GenericKey<8>) |
+| ValueType | Value type (page_id_t for internal, RID for leaf) |
+| KeyComparator | Comparison functor |
+
+---
+
+## Memory Model
+
+Pages use **embedded arrays** (not std::vector):
+```cpp
+KeyType key_array_[SLOT_CNT];      // Fixed-size, inline
+ValueType value_array_[SLOT_CNT];  // Fixed-size, inline
+```
+
+**Why:** Pages are accessed via `reinterpret_cast` from buffer pool memory. No constructors run, so heap-allocated containers would be garbage pointers.
+
+**Usage pattern:**
+```cpp
+auto page = bpm->FetchPage(page_id);
+auto internal = reinterpret_cast<InternalPage*>(page->GetData());
+// ... use internal->KeyAt(), etc ...
+bpm->UnpinPage(page_id, is_dirty);
+```
 
 ---
 
 ## Implementation Status
 
-### BPlusTreePage (Base) - DONE
-- `IsLeafPage()` - checks `page_type_ == LEAF_PAGE`
-- `SetPageType(IndexPageType)` - sets page type
-- `GetSize()` / `SetSize()` / `ChangeSizeBy()` - size management
-- `GetMaxSize()` / `SetMaxSize()` - capacity management
-- `GetMinSize()` - returns `floor(max_size_ / 2)`
+### BPlusTreePage (Base) - DONE ✓
+- `IsLeafPage()`, `SetPageType()`
+- `GetSize()`, `SetSize()`, `ChangeSizeBy()`
+- `GetMaxSize()`, `SetMaxSize()`, `GetMinSize()`
 
-### Internal Page - ALMOST DONE
-
-**Current implementation:**
-```cpp
-Init(max_size):
-  - SetPageType(IndexPageType::INTERNAL_PAGE)  // OK (fixed)
-  - SetMaxSize(max_size)                       // OK
-  - SetSize(0)                                 // OK (fixed)
-
-KeyAt(index):     return key_array_[index]       // OK
-SetKeyAt(index):  key_array_[index] = key        // OK
-ValueAt(index):   return page_id_array_[index]   // OK
-ValueIndex(value): linear search                 // HAS BUGS
-```
-
-**Remaining bug in ValueIndex (lines 78-86):**
-1. Loop uses `INTERNAL_PAGE_SLOT_CNT` - searches uninitialized memory
-   - Should use `GetSize()`
-2. `BUSTUB_ENSURE(true, ...)` - always passes (true is always true)
-   - Should be `UNREACHABLE("msg")` or `BUSTUB_ENSURE(false, ...)`
+### Internal Page - DONE ✓
+- `Init(max_size)` - sets type, max_size, size=0
+- `KeyAt(index)` - returns key_array_[index]
+- `SetKeyAt(index, key)` - sets key_array_[index]
+- `ValueAt(index)` - returns page_id_array_[index]
+- `ValueIndex(value)` - linear search, UNREACHABLE if not found
 
 ### Leaf Page - TODO
+- `Init()`, `KeyAt()`, `SetKeyAt()`, `ValueAt()`, `SetValueAt()`
+- `GetTombstones()` - return keys corresponding to tombstones
+- Tombstone buffer logic
+
+### BPlusTree - TODO
+- `Insert()` - find leaf, insert, split if full
+- `Remove()` - find leaf, delete, merge/redistribute if underfull
+- `GetValue()` - traverse to leaf, return value
+- `Begin()` / `End()` - iterator support
 
 ---
 
-## Notes
-- Embedded arrays (not std::vector) because pages are reinterpret_cast from raw memory
-- No constructors run, data must be physically in the 4KB page
+## Context Class (for tree operations)
+
+```cpp
+class Context {
+  std::optional<WritePageGuard> header_page_;  // Lock on header
+  page_id_t root_page_id_;                     // Current root
+  std::deque<WritePageGuard> write_set_;       // Pages being modified
+  std::deque<ReadPageGuard> read_set_;         // Pages being read
+};
+```
+
+Used to track page locks during tree traversal (crabbing protocol).
+
+---
+
+## Quick Reference
+
+**Slot count calculation:**
+```cpp
+#define INTERNAL_PAGE_SLOT_CNT \
+  ((BUSTUB_PAGE_SIZE - HEADER_SIZE) / (sizeof(KeyType) + sizeof(ValueType)))
+```
+
+**Page size:** 4096 bytes (typical)
+
+**Min size:** `floor(max_size / 2)` - for merge/redistribute decisions
