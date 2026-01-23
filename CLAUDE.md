@@ -2,6 +2,19 @@
 
 ## Project: CMU 15-445 - Project 2: B+ Tree Index
 
+**Due:** Oct 26, 2025 @ 11:59pm
+
+---
+
+## Tasks Overview
+
+| Task | Description | Status |
+|------|-------------|--------|
+| Task #1 | B+Tree Pages (Base, Internal, Leaf) | ✅ DONE |
+| Task #2 | B+Tree Operations (Insert, Delete, Search) | TODO |
+| Task #3 | Index Iterator | TODO |
+| Task #4 | Concurrency Control (latch crabbing) | TODO |
+
 ---
 
 ## Architecture Overview
@@ -10,19 +23,15 @@
 ┌─────────────────────────────────────────────────────────────┐
 │                    BPlusTree (b_plus_tree.h/cpp)            │
 │         Insert() / Remove() / GetValue() / Begin()         │
-│                    (Tree operations logic)                  │
 └─────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                      Page Classes                           │
-│              (Data containers - just accessors)             │
-│                                                             │
 │  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────┐ │
 │  │ BPlusTreePage   │  │ InternalPage    │  │ LeafPage    │ │
 │  │ (base class)    │◄─┤ (keys + ptrs)   │  │ (keys+vals) │ │
-│  │                 │  └─────────────────┘  └─────────────┘ │
-│  └─────────────────┘                                        │
+│  └─────────────────┘  └─────────────────┘  └─────────────┘ │
 └─────────────────────────────────────────────────────────────┘
                               │
                               ▼
@@ -31,8 +40,6 @@
 │            FetchPage() / NewPage() / UnpinPage()           │
 └─────────────────────────────────────────────────────────────┘
 ```
-
-**Key insight:** Page classes are just data containers with accessors. BPlusTree class implements all tree logic (insert, delete, split, merge, redistribute).
 
 ---
 
@@ -45,10 +52,11 @@
 | Leaf Page | `src/include/storage/page/b_plus_tree_leaf_page.h` | `src/storage/page/b_plus_tree_leaf_page.cpp` |
 | B+ Tree | `src/include/storage/index/b_plus_tree.h` | `src/storage/index/b_plus_tree.cpp` |
 | Iterator | `src/include/storage/index/index_iterator.h` | `src/storage/index/index_iterator.cpp` |
+| Header Page | `src/include/storage/page/b_plus_tree_header_page.h` | - |
 
 ---
 
-## Page Specifications
+## Task #1: B+Tree Pages - DONE ✓
 
 ### Base Page (BPlusTreePage)
 **Header: 12 bytes**
@@ -59,42 +67,201 @@
 | max_size_ | 4 | Max key/value pairs |
 
 ### Internal Page
-- Stores **n keys** and **n child pointers** (page_ids)
+- Stores **m keys** and **m+1 child pointers** (page_ids)
 - **key[0] is INVALID** - lookups start from index 1
 - Layout:
   ```
   key_array_:     [INVALID] [key1] [key2] ... [key_n-1]
   page_id_array_: [ptr0]    [ptr1] [ptr2] ... [ptr_n-1]
   ```
-- Invariant: `K(i) <= keys_in_subtree(ptr_i) < K(i+1)`
 
 ### Leaf Page
+**Header: 16 bytes** (base 12 + next_page_id 4)
 - Stores **m keys** and **m values** (RIDs)
-- Values are 64-bit record IDs (see `src/include/common/rid.h`)
-- **Tombstone buffer** for lazy deletion (Bε-tree concept):
-  - Stores last k indexes of deleted entries
-  - Deletion appends to buffer instead of removing
-  - When buffer full, oldest deletion applied
+- `next_page_id_` for sibling traversal (iterator)
+- **Tombstone buffer**: lazy deletion (Bε-tree concept)
+  - `num_tombstones_` tracks count, `tombstones_[]` stores indexes
+  - Deletion appends index to buffer instead of removing
+  - When buffer full (k entries), oldest deletion applied
+  - `KeyAt()` returns physical entry regardless of tombstone
+  - `GetTombstones()` returns keys with pending deletes
+
+---
+
+## Task #2: B+Tree Operations - TODO
+
+### Required Methods
+- `Insert(key, value)` → bool (false if duplicate key)
+- `Remove(key)`
+- `GetValue(key, result)` → bool
+- `GetRootPageId()` → page_id_t
+
+### Key Rules
+
+**Insertion:**
+- Only unique keys (return false for duplicates)
+- Split leaf when size reaches `max_size` AFTER insertion
+- Split internal when size reaches `max_size` BEFORE insertion
+- Update `root_page_id` in header page if root changes
+
+**Deletion:**
+- Merge/redistribute when page less than half full
+- Tombstones must be maintained across merge/split/redistribute
+- When coalescing leaves: recipient's tombstones processed first
+
+**Header Page:**
+- Access via `header_page_id_` (given in constructor)
+- `reinterpret_cast` to `BPlusTreeHeaderPage`
+- Stores `root_page_id`
+
+### Context Class (optional helper)
+```cpp
+class Context {
+  std::optional<WritePageGuard> header_page_;  // Lock on header
+  page_id_t root_page_id_;                     // Current root
+  std::deque<WritePageGuard> write_set_;       // Path of pages
+  std::deque<ReadPageGuard> read_set_;         // Read-locked pages
+};
+```
+Tips:
+- `write_set_.back()` = parent of current node
+- Set `header_page_ = std::nullopt` to unlock header
+- Pop from `write_set_` and drop to unlock pages
+
+---
+
+## Task #3: Index Iterator - TODO
+
+### Required Methods
+- `isEnd()` → bool
+- `operator++()` → move to next key/value
+- `operator*()` → return current key/value pair
+- `operator==()` / `operator!=()` → compare iterators
+
+### BPlusTree Methods
+- `Begin()` → iterator to first entry
+- `End()` → end iterator
+
+**Important:** Iterator must skip tombstoned entries!
+
+---
+
+## Task #4: Concurrency Control - TODO
+
+- Use **optimistic latch crabbing** technique
+- Use `ReadPageGuard` and `WritePageGuard` from Project #1
+- Release parent latches as soon as safe
+- **Never acquire same read latch twice** (deadlock risk)
+- Release latches in same order as acquired (header → bottom)
+- No global latch allowed
+
+---
+
+## Development Roadmap
+
+1. **Simple Inserts** - Insert KV into non-full node
+2. **Simple Search** - Find key in tree
+3. **Simple Splits** - Split full leaf on insert
+4. **Multiple Splits** - Handle cascading splits up the tree
+5. **Simple Deletes** - Delete from half-full+ leaf
+6. **Simple Coalesces** - Merge underfull nodes
+7. **Complex Coalesces** - Redistribute when can't merge
+8. **Index Iterators** - Task #3
+9. **Concurrent Indexes** - Task #4
+
+---
+
+## Important Hints
+
+- **Use binary search** for key lookups (otherwise timeout)
+- **Use buffer pool** for new nodes (no malloc/new for large blocks)
+- **Page guards** recommended for thread safety
+- `BUSTUB_ASSERT` for debug assertions (not in release)
+- `BUSTUB_ENSURE` for assertions in all modes
+
+---
+
+## Common Pitfalls
+
+- Don't test iterator for thread-safe scans
+- Release latches in acquisition order (header → bottom)
+- Only add trivially-constructed types to page classes (no vectors)
+- Don't modify `key_array_` and `value_array_` structure
+
+---
+
+## Testing
+
+```bash
+cd build
+make b_plus_tree_insert_test -j$(nproc)
+./test/b_plus_tree_insert_test
+
+# Other tests:
+make b_plus_tree_sequential_scale_test
+make b_plus_tree_delete_test
+make b_plus_tree_concurrent_test
+```
+
+### Tree Visualization
+```bash
+make b_plus_tree_printer -j
+./bin/b_plus_tree_printer
+>> 5 5       # set leaf/internal max_size
+>> f input.txt  # insert from file
+>> g tree.dot   # output dot file
+>> q
+```
+Then: `dot -Tpng -O tree.dot` or use http://dreampuf.github.io/GraphvizOnline/
+
+---
+
+## Formatting (required for grade)
+
+```bash
+make format
+make check-lint
+make check-clang-tidy-p2
+```
 
 ---
 
 ## Template Macros
 
 ```cpp
-// Shorthand for template declarations
+// For internal page / B+ tree (3 params)
 #define INDEX_TEMPLATE_ARGUMENTS \
   template <typename KeyType, typename ValueType, typename KeyComparator>
 
-// Usage:
-INDEX_TEMPLATE_ARGUMENTS
-auto BPlusTreeInternalPage<...>::KeyAt(int index) -> KeyType { ... }
+// For leaf page (4 params, includes tombstone count)
+#define FULL_INDEX_TEMPLATE_ARGUMENTS_DEFN \
+  template <typename KeyType, typename ValueType, typename KeyComparator, ssize_t NumTombs = 0>
 ```
 
 | Parameter | Purpose |
 |-----------|---------|
 | KeyType | Key type (e.g., GenericKey<8>) |
-| ValueType | Value type (page_id_t for internal, RID for leaf) |
+| ValueType | page_id_t for internal, RID for leaf |
 | KeyComparator | Comparison functor |
+| NumTombs | Tombstone buffer size (leaf only, default 0) |
+
+---
+
+## Implementation Status
+
+### Task #1: Pages - DONE ✓
+- **BPlusTreePage**: `IsLeafPage()`, `GetSize()`, `SetSize()`, `GetMaxSize()`, `SetMaxSize()`, `GetMinSize()`
+- **InternalPage**: `Init()`, `KeyAt()`, `SetKeyAt()`, `ValueAt()`, `ValueIndex()`
+- **LeafPage**: `Init()`, `KeyAt()`, `GetTombstones()`, `GetNextPageId()`, `SetNextPageId()`
+
+### Task #2: Operations - TODO
+- `Insert()`, `Remove()`, `GetValue()`, `GetRootPageId()`
+
+### Task #3: Iterator - TODO
+- `IndexIterator` class, `Begin()`, `End()`
+
+### Task #4: Concurrency - TODO
+- Latch crabbing implementation
 
 ---
 
@@ -102,72 +269,16 @@ auto BPlusTreeInternalPage<...>::KeyAt(int index) -> KeyType { ... }
 
 Pages use **embedded arrays** (not std::vector):
 ```cpp
-KeyType key_array_[SLOT_CNT];      // Fixed-size, inline
-ValueType value_array_[SLOT_CNT];  // Fixed-size, inline
+KeyType key_array_[SLOT_CNT];
+ValueType value_array_[SLOT_CNT];
 ```
 
-**Why:** Pages are accessed via `reinterpret_cast` from buffer pool memory. No constructors run, so heap-allocated containers would be garbage pointers.
+**Why:** Pages accessed via `reinterpret_cast` from buffer pool. No constructors run.
 
-**Usage pattern:**
+**Usage:**
 ```cpp
-auto page = bpm->FetchPage(page_id);
-auto internal = reinterpret_cast<InternalPage*>(page->GetData());
-// ... use internal->KeyAt(), etc ...
-bpm->UnpinPage(page_id, is_dirty);
+auto guard = bpm->WritePage(page_id);
+auto *page = guard.AsMut<InternalPage>();
+// use page->KeyAt(), etc.
+// guard releases automatically
 ```
-
----
-
-## Implementation Status
-
-### BPlusTreePage (Base) - DONE ✓
-- `IsLeafPage()`, `SetPageType()`
-- `GetSize()`, `SetSize()`, `ChangeSizeBy()`
-- `GetMaxSize()`, `SetMaxSize()`, `GetMinSize()`
-
-### Internal Page - DONE ✓
-- `Init(max_size)` - sets type, max_size, size=0
-- `KeyAt(index)` - returns key_array_[index]
-- `SetKeyAt(index, key)` - sets key_array_[index]
-- `ValueAt(index)` - returns page_id_array_[index]
-- `ValueIndex(value)` - linear search, UNREACHABLE if not found
-
-### Leaf Page - TODO
-- `Init()`, `KeyAt()`, `SetKeyAt()`, `ValueAt()`, `SetValueAt()`
-- `GetTombstones()` - return keys corresponding to tombstones
-- Tombstone buffer logic
-
-### BPlusTree - TODO
-- `Insert()` - find leaf, insert, split if full
-- `Remove()` - find leaf, delete, merge/redistribute if underfull
-- `GetValue()` - traverse to leaf, return value
-- `Begin()` / `End()` - iterator support
-
----
-
-## Context Class (for tree operations)
-
-```cpp
-class Context {
-  std::optional<WritePageGuard> header_page_;  // Lock on header
-  page_id_t root_page_id_;                     // Current root
-  std::deque<WritePageGuard> write_set_;       // Pages being modified
-  std::deque<ReadPageGuard> read_set_;         // Pages being read
-};
-```
-
-Used to track page locks during tree traversal (crabbing protocol).
-
----
-
-## Quick Reference
-
-**Slot count calculation:**
-```cpp
-#define INTERNAL_PAGE_SLOT_CNT \
-  ((BUSTUB_PAGE_SIZE - HEADER_SIZE) / (sizeof(KeyType) + sizeof(ValueType)))
-```
-
-**Page size:** 4096 bytes (typical)
-
-**Min size:** `floor(max_size / 2)` - for merge/redistribute decisions
