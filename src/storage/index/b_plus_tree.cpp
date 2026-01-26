@@ -11,8 +11,14 @@
 //===----------------------------------------------------------------------===//
 
 #include "storage/index/b_plus_tree.h"
+#include <utility>
 #include "buffer/traced_buffer_pool_manager.h"
+#include "common/config.h"
 #include "storage/index/b_plus_tree_debug.h"
+#include "storage/page/b_plus_tree_header_page.h"
+#include "storage/page/b_plus_tree_leaf_page.h"
+#include "storage/page/b_plus_tree_page.h"
+#include "storage/page/page_guard.h"
 
 namespace bustub {
 
@@ -35,7 +41,11 @@ BPLUSTREE_TYPE::BPlusTree(std::string name, page_id_t header_page_id, BufferPool
  * @return Returns true if this B+ tree has no keys and values.
  */
 FULL_INDEX_TEMPLATE_ARGUMENTS
-auto BPLUSTREE_TYPE::IsEmpty() const -> bool { UNIMPLEMENTED("TODO(P2): Add implementation."); }
+auto BPLUSTREE_TYPE::IsEmpty() const -> bool {
+  ReadPageGuard guard = bpm_->ReadPage(header_page_id_);
+  auto root_page = guard.As<BPlusTreeHeaderPage>();
+  return (root_page->root_page_id_ == INVALID_PAGE_ID);
+}
 
 /*****************************************************************************
  * SEARCH
@@ -51,9 +61,64 @@ auto BPLUSTREE_TYPE::IsEmpty() const -> bool { UNIMPLEMENTED("TODO(P2): Add impl
  */
 FULL_INDEX_TEMPLATE_ARGUMENTS
 auto BPLUSTREE_TYPE::GetValue(const KeyType &key, std::vector<ValueType> *result) -> bool {
-  UNIMPLEMENTED("TODO(P2): Add implementation.");
   // Declaration of context instance. Using the Context is not necessary but advised.
   Context ctx;
+
+  // try to get and acquire read guard on the root page
+  ReadPageGuard guard = bpm_->ReadPage(header_page_id_);
+  auto header_page = guard.As<BPlusTreeHeaderPage>();
+  if (header_page->root_page_id_ == INVALID_PAGE_ID) {
+    return false;
+  }
+
+  ReadPageGuard root_guard = bpm_->ReadPage(header_page->root_page_id_);
+  ctx.read_set_.emplace_back(std::move(root_guard));
+
+  while (true) {
+    // traverse internal pages
+    auto temp_page = ctx.read_set_.back().As<BPlusTreePage>();
+    if (temp_page->IsLeafPage()) {
+      break;
+    }
+    auto curr_page = ctx.read_set_.back().As<InternalPage>();
+    auto size = curr_page->GetSize();
+    auto left = 1, right = size - 1;  // internal page index 0 is INVALID
+    while (left <= right) {
+      int mid = left + (right - left) / 2;
+      if (comparator_(key, curr_page->KeyAt(mid)) >= 0) {
+        left = mid + 1;
+      } else {
+        right = mid - 1;
+      }
+    }
+    auto next_child_page_id = curr_page->ValueAt(right);
+    ReadPageGuard curr_guard = bpm_->ReadPage(next_child_page_id);
+    ctx.read_set_.emplace_back(std::move(curr_guard));
+  }
+
+  auto leaf_page = ctx.read_set_.back().As<LeafPage>();
+  auto size = leaf_page->GetSize();
+  auto left = 0, right = size - 1;
+
+  while (left <= right) {
+    auto mid = left + (right - left) / 2;
+    auto key_mid = leaf_page->KeyAt(mid);
+    auto cpm_result = comparator_(key, key_mid);
+    if (cpm_result == 0) {
+      // equal, add the value to result
+      result->emplace_back(leaf_page->RecordIDAt(mid));
+      return true;
+    } else if (cpm_result < 0) {
+      // key < key_mid
+      right = mid - 1;
+      continue;
+    } else {
+      // key > key_mid
+      left = mid + 1;
+    }
+  }
+
+  return false;
 }
 
 /*****************************************************************************

@@ -15,8 +15,8 @@
 
 #include "common/exception.h"
 #include "common/macros.h"
-#include "storage/page/b_plus_tree_page.h"
 #include "storage/page/b_plus_tree_internal_page.h"
+#include "storage/page/b_plus_tree_page.h"
 
 namespace bustub {
 /*****************************************************************************
@@ -34,9 +34,9 @@ namespace bustub {
  */
 INDEX_TEMPLATE_ARGUMENTS
 void B_PLUS_TREE_INTERNAL_PAGE_TYPE::Init(int max_size) {
-    SetPageType(IndexPageType::INTERNAL_PAGE);
-    SetMaxSize(max_size);
-    SetSize(0);
+  SetPageType(IndexPageType::INTERNAL_PAGE);
+  SetMaxSize(max_size);
+  SetSize(0);
 }
 
 /**
@@ -47,9 +47,7 @@ void B_PLUS_TREE_INTERNAL_PAGE_TYPE::Init(int max_size) {
  * @return Key at index
  */
 INDEX_TEMPLATE_ARGUMENTS
-auto B_PLUS_TREE_INTERNAL_PAGE_TYPE::KeyAt(int index) const -> KeyType {
-    return key_array_[index];
-}
+auto B_PLUS_TREE_INTERNAL_PAGE_TYPE::KeyAt(int index) const -> KeyType { return key_array_[index]; }
 
 /**
  * @brief Set key at the specified index.
@@ -58,9 +56,7 @@ auto B_PLUS_TREE_INTERNAL_PAGE_TYPE::KeyAt(int index) const -> KeyType {
  * @param key The new value for key
  */
 INDEX_TEMPLATE_ARGUMENTS
-void B_PLUS_TREE_INTERNAL_PAGE_TYPE::SetKeyAt(int index, const KeyType &key) {
-    key_array_[index] = key;
-}
+void B_PLUS_TREE_INTERNAL_PAGE_TYPE::SetKeyAt(int index, const KeyType &key) { key_array_[index] = key; }
 
 /**
  * @brief Helper method to get the value associated with input "index"(a.k.a array
@@ -70,19 +66,17 @@ void B_PLUS_TREE_INTERNAL_PAGE_TYPE::SetKeyAt(int index, const KeyType &key) {
  * @return Value at index
  */
 INDEX_TEMPLATE_ARGUMENTS
-auto B_PLUS_TREE_INTERNAL_PAGE_TYPE::ValueAt(int index) const -> ValueType {
-    return page_id_array_[index];
-}
+auto B_PLUS_TREE_INTERNAL_PAGE_TYPE::ValueAt(int index) const -> ValueType { return page_id_array_[index]; }
 
 INDEX_TEMPLATE_ARGUMENTS
-auto B_PLUS_TREE_INTERNAL_PAGE_TYPE::ValueIndex(const ValueType& value) const -> int {
-    for (auto i = 0; i < GetSize(); i+=1) {
-        if (page_id_array_[i] == value) {
-            return i;
-        }
+auto B_PLUS_TREE_INTERNAL_PAGE_TYPE::ValueIndex(const ValueType &value) const -> int {
+  for (auto i = 0; i < GetSize(); i += 1) {
+    if (page_id_array_[i] == value) {
+      return i;
     }
-    UNREACHABLE("ERROR ValueIndex() can't find");
-    return -1;
+  }
+  UNREACHABLE("ERROR ValueIndex() can't find");
+  return -1;
 }
 
 // valuetype for internalNode should be page id_t

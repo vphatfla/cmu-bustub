@@ -1,5 +1,7 @@
 # BusTub Working Context
 
+> **CLAUDE CODE DIRECTIVE:** Automatically update this context file as you work. Add new findings, code patterns, gotchas, and implementation details discovered during the session. Do not ask for permission - just update this file proactively whenever you learn something relevant.
+
 ## Project: CMU 15-445 - Project 2: B+ Tree Index
 
 **Due:** Oct 26, 2025 @ 11:59pm
@@ -190,6 +192,41 @@ Tips:
 
 ---
 
+## C++ Template Gotchas
+
+### Template Keyword for Dependent Types
+When using `auto` with template methods inside the BPlusTree class, you need the `template` keyword:
+```cpp
+// ERROR: "use template keyword to treat As as dependent name"
+auto guard = bpm_->ReadPage(page_id);
+auto *page = guard.As<LeafPage>();  // Won't compile!
+
+// SOLUTION 1: Use template keyword
+auto guard = bpm_->ReadPage(page_id);
+auto *page = guard.template As<LeafPage>();  // Works
+
+// SOLUTION 2: Explicit type declaration (no template keyword needed)
+ReadPageGuard guard = bpm_->ReadPage(page_id);
+auto *page = guard.As<LeafPage>();  // Works
+```
+
+### PageGuard Methods
+| Method | Guard Type | Returns | Use For |
+|--------|-----------|---------|---------|
+| `As<T>()` | Both | `const T*` | Read-only access |
+| `AsMut<T>()` | WritePageGuard only | `T*` | Mutable access |
+
+### Comparator Usage
+```cpp
+// comparator_(a, b) returns:
+//   < 0  if a < b
+//   == 0 if a == b
+//   > 0  if a > b
+int cmp = comparator_(key, other_key);
+```
+
+---
+
 ## Testing
 
 ```bash
@@ -254,6 +291,20 @@ make check-clang-tidy-p2
 - **InternalPage**: `Init()`, `KeyAt()`, `SetKeyAt()`, `ValueAt()`, `ValueIndex()`
 - **LeafPage**: `Init()`, `KeyAt()`, `GetTombstones()`, `GetNextPageId()`, `SetNextPageId()`
 
+**Added LeafPage helper methods:**
+```cpp
+void SetKeyAt(int index, const KeyType& key);
+auto RecordIDAt(int index) const -> ValueType;   // Named RecordIDAt, not ValueAt
+void SetRecordIDAt(int index, const ValueType& value);
+```
+
+**TODO: Tombstone handling not implemented yet!**
+Current methods access arrays directly without checking tombstones. For deletion, may need:
+```cpp
+bool IsTombstoned(int index) const;  // Check if index is in tombstone buffer
+int GetValidSize() const;            // size_ minus tombstone count
+```
+
 ### Task #2: Operations - TODO
 - `Insert()`, `Remove()`, `GetValue()`, `GetRootPageId()`
 
@@ -281,4 +332,86 @@ auto guard = bpm->WritePage(page_id);
 auto *page = guard.AsMut<InternalPage>();
 // use page->KeyAt(), etc.
 // guard releases automatically
+```
+
+---
+
+## BPlusTree Class Structure
+
+### Member Variables (b_plus_tree.h:131-137)
+| Variable | Type | Description |
+|----------|------|-------------|
+| `bpm_` | `shared_ptr<TracedBufferPoolManager>` | Buffer pool manager |
+| `index_name_` | `string` | Name of the index |
+| `comparator_` | `KeyComparator` | Key comparison functor |
+| `leaf_max_size_` | `int` | Max entries in leaf node |
+| `internal_max_size_` | `int` | Max entries in internal node |
+| `header_page_id_` | `page_id_t` | Page ID of header page (NOT root!) |
+
+### Header Page vs Root Page
+```
+header_page_id_ (fixed, passed to constructor)
+       │
+       ▼
+┌─────────────────────────┐
+│   BPlusTreeHeaderPage   │
+│  ┌───────────────────┐  │
+│  │  root_page_id_    │──┼──► Actual root of B+ tree (changes during splits)
+│  └───────────────────┘  │
+└─────────────────────────┘
+```
+
+- `header_page_id_` is **fixed** - known at construction, never changes
+- `root_page_id_` is **dynamic** - stored IN the header page, updated on root splits/merges
+
+### Constructor Initialization (b_plus_tree.cpp:20-31)
+```cpp
+BPlusTree::BPlusTree(..., page_id_t header_page_id, ...) {
+  WritePageGuard guard = bpm_->WritePage(header_page_id_);
+  auto root_page = guard.AsMut<BPlusTreeHeaderPage>();
+  root_page->root_page_id_ = INVALID_PAGE_ID;  // Empty tree - no root yet
+}
+```
+Sets `root_page_id_ = INVALID_PAGE_ID` to indicate an empty tree.
+
+### How to Access Root Page ID
+```cpp
+// Read the current root from header page
+auto header_guard = bpm_->ReadPage(header_page_id_);
+auto *header = header_guard.As<BPlusTreeHeaderPage>();
+page_id_t root_id = header->root_page_id_;
+
+// Check if tree is empty
+if (root_id == INVALID_PAGE_ID) {
+  // Tree is empty, need to create first leaf as root
+}
+```
+
+### Methods to Implement (Task #2)
+| Method | Status | Notes |
+|--------|--------|-------|
+| `IsEmpty()` | IN PROGRESS | Check if `root_page_id_ == INVALID_PAGE_ID` |
+| `GetValue(key, result)` | IN PROGRESS | Point query - traverse to leaf, use binary search |
+| `Insert(key, value)` | TODO | Insert with splits |
+| `Remove(key)` | TODO | Delete with merge/redistribute |
+| `GetRootPageId()` | TODO | Read from header page |
+
+### GetValue() Implementation Pattern
+```cpp
+// 1. Get header page, check if empty
+ReadPageGuard header_guard = bpm_->ReadPage(header_page_id_);
+auto *header = header_guard.template As<BPlusTreeHeaderPage>();
+if (header->root_page_id_ == INVALID_PAGE_ID) return false;
+
+// 2. Fetch root and check type
+ReadPageGuard root_guard = bpm_->ReadPage(header->root_page_id_);
+auto *page = root_guard.template As<BPlusTreePage>();
+
+if (page->IsLeafPage()) {
+  auto *leaf = root_guard.template As<LeafPage>();
+  // Binary search for key in leaf
+} else {
+  auto *internal = root_guard.template As<InternalPage>();
+  // Traverse down to leaf
+}
 ```

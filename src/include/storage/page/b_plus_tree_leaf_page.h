@@ -74,6 +74,10 @@ class BPlusTreeLeafPage : public BPlusTreePage {
   void SetNextPageId(page_id_t next_page_id);
   auto KeyAt(int index) const -> KeyType;
 
+  // added functions below
+  void SetKeyAt(int index, const KeyType &key);
+  auto RecordIDAt(int index) const -> ValueType;
+  void SetRecordIDAt(int index, const ValueType &value);
   /**
    * @brief for test only return a string representing all keys in
    * this leaf page formatted as "(tombkey1, tombkey2, ...|key1,key2,key3,...)"
