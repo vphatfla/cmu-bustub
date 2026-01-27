@@ -106,7 +106,15 @@ auto BPLUSTREE_TYPE::GetValue(const KeyType &key, std::vector<ValueType> *result
     auto cpm_result = comparator_(key, key_mid);
     if (cpm_result == 0) {
       // equal, add the value to result
+      auto tombstones = leaf_page->GetTombstones();
+      for (const auto &tt : tombstones) {
+        if (comparator_(tt, key) == 0) {
+          return false;
+        }
+      }
+
       result->emplace_back(leaf_page->RecordIDAt(mid));
+      ctx.read_set_.pop_front();
       return true;
     } else if (cpm_result < 0) {
       // key < key_mid
@@ -118,6 +126,7 @@ auto BPLUSTREE_TYPE::GetValue(const KeyType &key, std::vector<ValueType> *result
     }
   }
 
+  ctx.read_set_.pop_front();
   return false;
 }
 
