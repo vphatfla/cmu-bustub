@@ -12,6 +12,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <string>
 #include <utility>
 #include <vector>
@@ -77,7 +78,13 @@ class BPlusTreeLeafPage : public BPlusTreePage {
   // added functions below
   void SetKeyAt(int index, const KeyType &key);
   auto RecordIDAt(int index) const -> ValueType;
-  void SetRecordIDAt(int index, const ValueType &value);
+  void SetValueAt(int index, const ValueType &value);
+
+  void RemoveIndexFromTombstones(const size_t index);
+
+  auto IsIndexInTombstones(const size_t index) const -> bool;
+
+  void ShiftKeyAndValueRight(const size_t index);
   /**
    * @brief for test only return a string representing all keys in
    * this leaf page formatted as "(tombkey1, tombkey2, ...|key1,key2,key3,...)"

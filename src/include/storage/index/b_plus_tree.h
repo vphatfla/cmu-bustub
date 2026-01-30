@@ -23,6 +23,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cstddef>
 #include <deque>
 #include <filesystem>
 #include <iostream>
@@ -31,6 +32,7 @@
 #include <queue>
 #include <shared_mutex>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include "common/config.h"
@@ -40,6 +42,7 @@
 #include "storage/page/b_plus_tree_internal_page.h"
 #include "storage/page/b_plus_tree_leaf_page.h"
 #include "storage/page/page_guard.h"
+#include <concepts>
 
 namespace bustub {
 
@@ -135,6 +138,10 @@ class BPlusTree {
   int leaf_max_size_;
   int internal_max_size_;
   page_id_t header_page_id_;
+
+  auto FindInsertPosition(LeafPage* page, const KeyType& key) const -> size_t;
+  auto IsKeyInTombstones(LeafPage* page,  const KeyType& key) const -> bool;
+
 };
 
 /**
@@ -172,5 +179,15 @@ struct PrintableBPlusTree {
     }
   }
 };
+
+// utility func to drain the queue
+
+template<typename T>
+inline void DrainQueueUntilSize(std::deque<T>& queue, const int size) {
+    static_assert(std::is_same_v<T, ReadPageGuard> || std::is_same_v<T, WritePageGuard>, "Type must be read page guard or write page guard");
+    while (queue.size() > size) {
+        queue.pop_front();
+    }
+}
 
 }  // namespace bustub

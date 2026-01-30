@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "storage/index/b_plus_tree.h"
+#include <cstddef>
 #include <utility>
 #include "buffer/traced_buffer_pool_manager.h"
 #include "common/config.h"
@@ -94,6 +95,7 @@ auto BPLUSTREE_TYPE::GetValue(const KeyType &key, std::vector<ValueType> *result
     auto next_child_page_id = curr_page->ValueAt(right);
     ReadPageGuard curr_guard = bpm_->ReadPage(next_child_page_id);
     ctx.read_set_.emplace_back(std::move(curr_guard));
+    ctx.read_set_.pop_front();
   }
 
   auto leaf_page = ctx.read_set_.back().As<LeafPage>();
@@ -146,9 +148,111 @@ auto BPLUSTREE_TYPE::GetValue(const KeyType &key, std::vector<ValueType> *result
  */
 FULL_INDEX_TEMPLATE_ARGUMENTS
 auto BPLUSTREE_TYPE::Insert(const KeyType &key, const ValueType &value) -> bool {
-  UNIMPLEMENTED("TODO(P2): Add implementation.");
   // Declaration of context instance. Using the Context is not necessary but advised.
   Context ctx;
+
+  // root header page
+  WritePageGuard guard = bpm_->WritePage(header_page_id_);
+  auto header_page = guard.AsMut<BPlusTreeHeaderPage>();
+  if (header_page->root_page_id_ == INVALID_PAGE_ID) {
+    // tree is empty
+    auto new_page_id = bpm_->NewPage();
+    header_page->root_page_id_ = new_page_id;
+
+    WritePageGuard leaf_guard = bpm_->WritePage(new_page_id);
+    auto leaf_page = leaf_guard.AsMut<LeafPage>();
+    leaf_page->Init();
+
+    ctx.write_set_.emplace_back(std::move(leaf_guard));
+  }
+
+  // internal page traversal
+    while (true) {
+        auto temp_page = ctx.write_set_.back().As<BPlusTreePage>();
+        if (temp_page->IsLeafPage()) {
+          break;
+        }
+        auto curr_page = ctx.write_set_.back().As<InternalPage>();
+        auto size = curr_page->GetSize();
+        auto left = 1, right = size - 1;  // internal page index 0 is INVALID
+        while (left <= right) {
+          int mid = left + (right - left) / 2;
+          if (comparator_(key, curr_page->KeyAt(mid)) >= 0) {
+            left = mid + 1;
+          } else {
+            right = mid - 1;
+          }
+        }
+        auto next_child_page_id = curr_page->ValueAt(right);
+        WritePageGuard curr_guard = bpm_->WritePage(next_child_page_id);
+        ctx.write_set_.emplace_back(std::move(curr_guard));
+        // ctx.write_set_.pop_front(); // do not remove previous page write guard in case of splitting
+    }
+
+    auto leaf_guard = std::move(ctx.write_set_.back());
+    auto leaf_page = leaf_guard.AsMut<LeafPage>();
+
+    auto insertPos = static_cast<int>(FindInsertPosition(leaf_page, key));
+
+    if (insertPos < leaf_page->GetSize()) {
+        // release the parent guard
+        DrainQueueUntilSize(ctx.write_set_, 1);
+        if (comparator_(leaf_page->KeyAt(insertPos), key) == 0) {
+            // key exists, might be deleted
+            // check if tomstone
+            if (leaf_page->IsIndexInTombstones(insertPos)) {
+                leaf_page->SetKeyAt(insertPos, key);
+                leaf_page->SetValueAt(insertPos, value);
+                // remove from tombstone
+                leaf_page->RemoveIndexFromTombstones(insertPos);
+                DrainQueueUntilSize(ctx.write_set_, 0);
+                return true;
+            }
+            // duplicate, not support, key must be unique
+            DrainQueueUntilSize(ctx.write_set_, 0);
+            return false;
+        }
+    }
+
+    if (leaf_page->GetSize() < leaf_page->GetMaxSize()) {
+        DrainQueueUntilSize(ctx.write_set_, 1);
+        // there are spaces to insert
+        leaf_page->ShiftKeyAndValueRight(insertPos);
+        leaf_page->SetSize(leaf_page->GetSize() + 1);
+        // insert
+        leaf_page->SetKeyAt(insertPos, key);
+        leaf_page->SetValueAt(insertPos, value);
+        return true;
+    }
+
+    // no space left, have to merge or split
+    // TODO
+    return true;
+}
+
+FULL_INDEX_TEMPLATE_ARGUMENTS
+auto BPLUSTREE_TYPE::FindInsertPosition(LeafPage* page, const KeyType& key) const -> size_t {
+    size_t left = 0, right = page->GetSize();
+    while (left < right) {
+        auto mid = left + (right - left) / 2;
+        if (comparator_(page->KeyAt(mid), key) < 0) {
+            left = mid + 1;
+        } else {
+            right = mid;
+        }
+    }
+
+    return left;
+}
+
+FULL_INDEX_TEMPLATE_ARGUMENTS
+auto BPLUSTREE_TYPE::IsKeyInTombstones(LeafPage* page, const KeyType& key) const -> bool {
+    for (const auto& k: page->GetTombstones()) {
+        if (comparator_(k, key) == 0){
+            return true;
+        }
+    }
+    return false;
 }
 
 /*****************************************************************************

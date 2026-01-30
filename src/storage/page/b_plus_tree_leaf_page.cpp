@@ -16,6 +16,7 @@
 
 #include "common/config.h"
 #include "common/exception.h"
+#include "common/macros.h"
 #include "common/rid.h"
 #include "storage/page/b_plus_tree_leaf_page.h"
 #include "storage/page/b_plus_tree_page.h"
@@ -80,7 +81,49 @@ FULL_INDEX_TEMPLATE_ARGUMENTS
 auto B_PLUS_TREE_LEAF_PAGE_TYPE::RecordIDAt(int index) const -> ValueType { return rid_array_[index]; }
 
 FULL_INDEX_TEMPLATE_ARGUMENTS
-void B_PLUS_TREE_LEAF_PAGE_TYPE::SetRecordIDAt(int index, const ValueType &value) { rid_array_[index] = value; }
+void B_PLUS_TREE_LEAF_PAGE_TYPE::SetValueAt(int index, const ValueType &value) { rid_array_[index] = value; }
+
+FULL_INDEX_TEMPLATE_ARGUMENTS
+auto B_PLUS_TREE_LEAF_PAGE_TYPE::IsIndexInTombstones(const size_t index) const -> bool {
+    for (size_t i = 0; i<num_tombstones_; i+=1) {
+        if (tombstones_[i] == index) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+FULL_INDEX_TEMPLATE_ARGUMENTS
+void B_PLUS_TREE_LEAF_PAGE_TYPE::RemoveIndexFromTombstones(const size_t index) {
+    auto pos = -1;
+    for (size_t i = 0; i<num_tombstones_; i+=1) {
+        if (tombstones_[i] == index) {
+            pos = i;
+        }
+    }
+
+    BUSTUB_ENSURE(pos != -1, "Can not found pos to remove index, index=");
+
+    for (size_t i = pos; i < num_tombstones_; i+=1) {
+        tombstones_[i] = tombstones_[i+1];
+    }
+
+    num_tombstones_ -= 1;
+}
+
+FULL_INDEX_TEMPLATE_ARGUMENTS
+void B_PLUS_TREE_LEAF_PAGE_TYPE::ShiftKeyAndValueRight(const size_t index) {
+    BUSTUB_ENSURE(static_cast<int>(index) <= GetSize(), "Index must be smaller or equal to the current size of page array");
+    BUSTUB_ENSURE(GetSize() < GetMaxSize(), "Current size can not be equal the max size");
+    if (static_cast<int>(index) == GetSize()) {
+        return; // pos is already at the right most, nothing to shift
+    }
+    for (auto i = GetSize(); i >= static_cast<int>(index); i-=1) {
+        key_array_[i] = key_array_[i-1];
+        rid_array_[i] = rid_array_[i-1];
+    }
+}
 
 template class BPlusTreeLeafPage<GenericKey<4>, RID, GenericComparator<4>>;
 
