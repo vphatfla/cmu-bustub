@@ -225,6 +225,22 @@ auto *page = guard.As<LeafPage>();  // Works
 int cmp = comparator_(key, other_key);
 ```
 
+### C++ Standard: C++17
+Project uses `CMAKE_CXX_STANDARD 17`. C++20 features like `concepts` are NOT available.
+
+**Type constraints (C++17 style):**
+```cpp
+#include <type_traits>
+
+template<typename Guard>
+auto SomeFunction(Guard& guard) -> int {
+  static_assert(std::is_same_v<Guard, ReadPageGuard> ||
+                std::is_same_v<Guard, WritePageGuard>,
+                "Guard must be ReadPageGuard or WritePageGuard");
+  // ...
+}
+```
+
 ---
 
 ## Testing
@@ -305,8 +321,28 @@ bool IsTombstoned(int index) const;  // Check if index is in tombstone buffer
 int GetValidSize() const;            // size_ minus tombstone count
 ```
 
-### Task #2: Operations - TODO
-- `Insert()`, `Remove()`, `GetValue()`, `GetRootPageId()`
+### Task #2: Operations - IN PROGRESS
+- `GetValue()` - ✅ DONE
+- `IsEmpty()` - ✅ DONE
+- `Insert()` - IN PROGRESS (simple insert without split done, split TODO)
+- `Remove()` - TODO
+- `GetRootPageId()` - TODO
+
+**Helper methods added to BPlusTree:**
+```cpp
+auto FindInsertPosition(LeafPage* page, const KeyType& key) const -> size_t;
+auto IsKeyInTombstones(LeafPage* page, const KeyType& key) const -> bool;
+```
+
+**Helper methods added to LeafPage:**
+```cpp
+void SetKeyAt(int index, const KeyType &key);
+auto RecordIDAt(int index) const -> ValueType;
+void SetValueAt(int index, const ValueType &value);
+auto IsIndexInTombstones(const size_t index) const -> bool;
+void RemoveIndexFromTombstones(const size_t index);
+void ShiftKeyAndValueRight(const size_t index);
+```
 
 ### Task #3: Iterator - TODO
 - `IndexIterator` class, `Begin()`, `End()`
@@ -415,3 +451,55 @@ if (page->IsLeafPage()) {
   // Traverse down to leaf
 }
 ```
+
+---
+
+## Insert() Implementation Notes
+
+### Current Flow (partial implementation)
+1. Acquire write guard on header page
+2. If tree empty: create new leaf as root, init it, push guard to write_set_
+3. Traverse internal pages (binary search), push guards to write_set_
+4. At leaf: find insert position via binary search
+5. Check for duplicate (handle tombstone reuse)
+6. If space available: shift right and insert
+7. If no space: split (TODO)
+
+### Binary Search for Insert Position (lower_bound style)
+```cpp
+size_t left = 0, right = page->GetSize();
+while (left < right) {
+    auto mid = left + (right - left) / 2;
+    if (comparator_(page->KeyAt(mid), key) < 0) {
+        left = mid + 1;
+    } else {
+        right = mid;
+    }
+}
+return left;  // First index where key_array[i] >= key
+```
+
+### ShiftKeyAndValueRight - Correct Loop
+```cpp
+// Shift elements [index, size-1] to [index+1, size]
+for (auto i = GetSize(); i > static_cast<int>(index); i--) {
+    key_array_[i] = key_array_[i-1];
+    rid_array_[i] = rid_array_[i-1];
+}
+// Note: i > index, NOT i >= index
+```
+
+### RemoveIndexFromTombstones - Correct Loop
+```cpp
+// Shift elements left to remove tombstone at pos
+for (size_t i = pos; i < num_tombstones_ - 1; i++) {
+    tombstones_[i] = tombstones_[i+1];
+}
+num_tombstones_--;
+// Note: i < num_tombstones_ - 1, NOT i < num_tombstones_
+```
+
+### Known TODOs in Insert()
+- Need to fetch root page when tree is NOT empty (currently missing)
+- `DrainQueueUntilSize()` helper function not implemented
+- Split logic not implemented
