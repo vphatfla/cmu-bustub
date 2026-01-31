@@ -10,7 +10,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include <algorithm>
 #include <cstddef>
+#include <functional>
 #include <sstream>
 #include <vector>
 
@@ -78,51 +80,81 @@ FULL_INDEX_TEMPLATE_ARGUMENTS
 void B_PLUS_TREE_LEAF_PAGE_TYPE::SetKeyAt(int index, const KeyType &key) { key_array_[index] = key; }
 
 FULL_INDEX_TEMPLATE_ARGUMENTS
-auto B_PLUS_TREE_LEAF_PAGE_TYPE::RecordIDAt(int index) const -> ValueType { return rid_array_[index]; }
+auto B_PLUS_TREE_LEAF_PAGE_TYPE::ValueAt(int index) const -> ValueType { return rid_array_[index]; }
 
 FULL_INDEX_TEMPLATE_ARGUMENTS
 void B_PLUS_TREE_LEAF_PAGE_TYPE::SetValueAt(int index, const ValueType &value) { rid_array_[index] = value; }
 
 FULL_INDEX_TEMPLATE_ARGUMENTS
 auto B_PLUS_TREE_LEAF_PAGE_TYPE::IsIndexInTombstones(const size_t index) const -> bool {
-    for (size_t i = 0; i<num_tombstones_; i+=1) {
-        if (tombstones_[i] == index) {
-            return true;
-        }
+  for (size_t i = 0; i < num_tombstones_; i += 1) {
+    if (tombstones_[i] == index) {
+      return true;
     }
+  }
 
-    return false;
+  return false;
 }
 
 FULL_INDEX_TEMPLATE_ARGUMENTS
 void B_PLUS_TREE_LEAF_PAGE_TYPE::RemoveIndexFromTombstones(const size_t index) {
-    auto pos = -1;
-    for (size_t i = 0; i<num_tombstones_; i+=1) {
-        if (tombstones_[i] == index) {
-            pos = i;
-        }
+  auto pos = -1;
+  for (size_t i = 0; i < num_tombstones_; i += 1) {
+    if (tombstones_[i] == index) {
+      pos = i;
     }
+  }
 
-    BUSTUB_ENSURE(pos != -1, "Can not found pos to remove index, index=");
+  BUSTUB_ENSURE(pos != -1, "Can not found pos to remove index, index=");
 
-    for (size_t i = pos; i < num_tombstones_; i+=1) {
-        tombstones_[i] = tombstones_[i+1];
-    }
+  for (size_t i = pos; i < num_tombstones_; i += 1) {
+    tombstones_[i] = tombstones_[i + 1];
+  }
 
-    num_tombstones_ -= 1;
+  num_tombstones_ -= 1;
 }
 
 FULL_INDEX_TEMPLATE_ARGUMENTS
 void B_PLUS_TREE_LEAF_PAGE_TYPE::ShiftKeyAndValueRight(const size_t index) {
-    BUSTUB_ENSURE(static_cast<int>(index) <= GetSize(), "Index must be smaller or equal to the current size of page array");
-    BUSTUB_ENSURE(GetSize() < GetMaxSize(), "Current size can not be equal the max size");
-    if (static_cast<int>(index) == GetSize()) {
-        return; // pos is already at the right most, nothing to shift
-    }
-    for (auto i = GetSize(); i >= static_cast<int>(index); i-=1) {
-        key_array_[i] = key_array_[i-1];
-        rid_array_[i] = rid_array_[i-1];
-    }
+  BUSTUB_ENSURE(static_cast<int>(index) <= GetSize(),
+                "Index must be smaller or equal to the current size of page array");
+  BUSTUB_ENSURE(GetSize() < GetMaxSize(), "Current size can not be equal the max size");
+  if (static_cast<int>(index) == GetSize()) {
+    return;  // pos is already at the right most, nothing to shift
+  }
+  for (auto i = GetSize(); i > static_cast<int>(index); i -= 1) {
+    key_array_[i] = key_array_[i - 1];
+    rid_array_[i] = rid_array_[i - 1];
+  }
+}
+
+FULL_INDEX_TEMPLATE_ARGUMENTS
+void B_PLUS_TREE_LEAF_PAGE_TYPE::ShiftKeyAndValueLeft(const size_t index) {
+  for (int i = index; i < GetSize() - 1; i += 1) {
+    key_array_[i] = key_array_[i + 1];
+    rid_array_[i] = rid_array_[i + 1];
+  }
+}
+
+FULL_INDEX_TEMPLATE_ARGUMENTS
+void B_PLUS_TREE_LEAF_PAGE_TYPE::CompactTombstones() {
+  if (num_tombstones_ == 0) {
+    return;
+  }
+  auto tombstones_vector = std::vector<size_t>{};
+  for (size_t i = 0; i < num_tombstones_; i += 1) {
+    tombstones_vector.emplace_back(tombstones_[i]);
+  }
+  // sort decesding
+  std::sort(tombstones_vector.begin(), tombstones_vector.end(), std::greater<size_t>());
+
+  for (const auto index : tombstones_vector) {
+    ShiftKeyAndValueLeft(index);
+    SetSize(GetSize() - 1);
+  }
+
+  // reset the tombstones
+  num_tombstones_ = 0;
 }
 
 template class BPlusTreeLeafPage<GenericKey<4>, RID, GenericComparator<4>>;

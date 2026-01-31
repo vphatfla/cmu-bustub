@@ -33,8 +33,10 @@
 #include <shared_mutex>
 #include <string>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
+#include <concepts>
 #include "common/config.h"
 #include "common/macros.h"
 #include "storage/index/index_iterator.h"
@@ -42,7 +44,6 @@
 #include "storage/page/b_plus_tree_internal_page.h"
 #include "storage/page/b_plus_tree_leaf_page.h"
 #include "storage/page/page_guard.h"
-#include <concepts>
 
 namespace bustub {
 
@@ -139,9 +140,29 @@ class BPlusTree {
   int internal_max_size_;
   page_id_t header_page_id_;
 
-  auto FindInsertPosition(LeafPage* page, const KeyType& key) const -> size_t;
-  auto IsKeyInTombstones(LeafPage* page,  const KeyType& key) const -> bool;
+  [[nodiscard]] auto FindInsertPositionInLeafPage(LeafPage *page, const KeyType &key) const -> size_t;
+  [[nodiscard]] auto FindInsertPositionInInternalPage(InternalPage *page, const KeyType &key) const -> size_t;
 
+  /// @brief Push up the key and page id after split on INSERT
+  void InsertToParent(const KeyType &key, const page_id_t page_id, Context &ctx);
+
+  /// @brief Insert the key/value to the leaf node, increase the node size
+  /// Caller must ensure that there is space for this isnertion
+  auto InsertKVToLeafePage(LeafPage *page, const KeyType &key, const ValueType &value) -> bool;
+
+  /// @brief Insert the key/pageid to the internal node, increate the node size
+  /// Caller must ensure that there is space for this insertion
+  void InsertKeyPageIdToInternalPage(InternalPage *page, const KeyType &key, const page_id_t page_id);
+
+  /// @brief Split the Leaf Page and set size for both old and new page, caller must ensure the condition to split is
+  /// correct
+  /// @return a unique ptr of the new leaf page WritePageGuard, caller must flush the new page
+  [[nodiscard]] auto SplitLeafPage(LeafPage *old_page) -> std::pair<WritePageGuard, page_id_t>;
+
+  /// @brief Split the Internal Page and set size for both old and new page, caller must ensure condition to split is
+  /// correct
+  /// @return tuple [pushed up key, guard of new internal page, page id of the new page]
+  [[nodiscard]] auto SplitInternalPage(InternalPage *old_page) -> std::tuple<KeyType, WritePageGuard, page_id_t>;
 };
 
 /**
@@ -182,12 +203,13 @@ struct PrintableBPlusTree {
 
 // utility func to drain the queue
 
-template<typename T>
-inline void DrainQueueUntilSize(std::deque<T>& queue, const int size) {
-    static_assert(std::is_same_v<T, ReadPageGuard> || std::is_same_v<T, WritePageGuard>, "Type must be read page guard or write page guard");
-    while (queue.size() > size) {
-        queue.pop_front();
-    }
+template <typename T>
+inline void DrainQueueUntilSize(std::deque<T> &queue, const int size) {
+  static_assert(std::is_same_v<T, ReadPageGuard> || std::is_same_v<T, WritePageGuard>,
+                "Type must be read page guard or write page guard");
+  while (queue.size() > size) {
+    queue.pop_front();
+  }
 }
 
 }  // namespace bustub

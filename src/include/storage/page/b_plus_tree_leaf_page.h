@@ -77,7 +77,7 @@ class BPlusTreeLeafPage : public BPlusTreePage {
 
   // added functions below
   void SetKeyAt(int index, const KeyType &key);
-  auto RecordIDAt(int index) const -> ValueType;
+  auto ValueAt(int index) const -> ValueType;
   void SetValueAt(int index, const ValueType &value);
 
   void RemoveIndexFromTombstones(const size_t index);
@@ -85,6 +85,12 @@ class BPlusTreeLeafPage : public BPlusTreePage {
   auto IsIndexInTombstones(const size_t index) const -> bool;
 
   void ShiftKeyAndValueRight(const size_t index);
+
+  /// @biref Shift the key and value to the left 1 unit, used in deletion of the key at index
+  void ShiftKeyAndValueLeft(const size_t index);
+
+  /// @brief Try to remove all the tombstone key-value
+  void CompactTombstones();
   /**
    * @brief for test only return a string representing all keys in
    * this leaf page formatted as "(tombkey1, tombkey2, ...|key1,key2,key3,...)"

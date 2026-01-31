@@ -11,10 +11,14 @@
 //===----------------------------------------------------------------------===//
 
 #include "storage/index/b_plus_tree.h"
+#include <cmath>
 #include <cstddef>
+#include <memory>
+#include <tuple>
 #include <utility>
 #include "buffer/traced_buffer_pool_manager.h"
 #include "common/config.h"
+#include "common/macros.h"
 #include "storage/index/b_plus_tree_debug.h"
 #include "storage/page/b_plus_tree_header_page.h"
 #include "storage/page/b_plus_tree_leaf_page.h"
@@ -115,7 +119,7 @@ auto BPLUSTREE_TYPE::GetValue(const KeyType &key, std::vector<ValueType> *result
         }
       }
 
-      result->emplace_back(leaf_page->RecordIDAt(mid));
+      result->emplace_back(leaf_page->ValueAt(mid));
       ctx.read_set_.pop_front();
       return true;
     } else if (cpm_result < 0) {
@@ -164,95 +168,168 @@ auto BPLUSTREE_TYPE::Insert(const KeyType &key, const ValueType &value) -> bool 
     leaf_page->Init();
 
     ctx.write_set_.emplace_back(std::move(leaf_guard));
+  } else {
+    WritePageGuard root_guard = bpm_->WritePage(header_page->root_page_id_);
+    ctx.write_set_.emplace_back(std::move(root_guard));
   }
 
   // internal page traversal
-    while (true) {
-        auto temp_page = ctx.write_set_.back().As<BPlusTreePage>();
-        if (temp_page->IsLeafPage()) {
-          break;
-        }
-        auto curr_page = ctx.write_set_.back().As<InternalPage>();
-        auto size = curr_page->GetSize();
-        auto left = 1, right = size - 1;  // internal page index 0 is INVALID
-        while (left <= right) {
-          int mid = left + (right - left) / 2;
-          if (comparator_(key, curr_page->KeyAt(mid)) >= 0) {
-            left = mid + 1;
-          } else {
-            right = mid - 1;
-          }
-        }
-        auto next_child_page_id = curr_page->ValueAt(right);
-        WritePageGuard curr_guard = bpm_->WritePage(next_child_page_id);
-        ctx.write_set_.emplace_back(std::move(curr_guard));
-        // ctx.write_set_.pop_front(); // do not remove previous page write guard in case of splitting
+  while (true) {
+    auto temp_page = ctx.write_set_.back().As<BPlusTreePage>();
+    if (temp_page->IsLeafPage()) {
+      break;
     }
-
-    auto leaf_guard = std::move(ctx.write_set_.back());
-    auto leaf_page = leaf_guard.AsMut<LeafPage>();
-
-    auto insertPos = static_cast<int>(FindInsertPosition(leaf_page, key));
-
-    if (insertPos < leaf_page->GetSize()) {
-        // release the parent guard
-        DrainQueueUntilSize(ctx.write_set_, 1);
-        if (comparator_(leaf_page->KeyAt(insertPos), key) == 0) {
-            // key exists, might be deleted
-            // check if tomstone
-            if (leaf_page->IsIndexInTombstones(insertPos)) {
-                leaf_page->SetKeyAt(insertPos, key);
-                leaf_page->SetValueAt(insertPos, value);
-                // remove from tombstone
-                leaf_page->RemoveIndexFromTombstones(insertPos);
-                DrainQueueUntilSize(ctx.write_set_, 0);
-                return true;
-            }
-            // duplicate, not support, key must be unique
-            DrainQueueUntilSize(ctx.write_set_, 0);
-            return false;
-        }
+    auto curr_page = ctx.write_set_.back().As<InternalPage>();
+    auto size = curr_page->GetSize();
+    auto left = 1, right = size - 1;  // internal page index 0 is INVALID
+    while (left <= right) {
+      int mid = left + (right - left) / 2;
+      if (comparator_(key, curr_page->KeyAt(mid)) >= 0) {
+        left = mid + 1;
+      } else {
+        right = mid - 1;
+      }
     }
+    auto next_child_page_id = curr_page->ValueAt(right);
+    WritePageGuard curr_guard = bpm_->WritePage(next_child_page_id);
+    ctx.write_set_.emplace_back(std::move(curr_guard));
+    // ctx.write_set_.pop_front(); // do not remove previous page write guard in case of splitting
+  }
 
-    if (leaf_page->GetSize() < leaf_page->GetMaxSize()) {
-        DrainQueueUntilSize(ctx.write_set_, 1);
-        // there are spaces to insert
-        leaf_page->ShiftKeyAndValueRight(insertPos);
-        leaf_page->SetSize(leaf_page->GetSize() + 1);
-        // insert
-        leaf_page->SetKeyAt(insertPos, key);
-        leaf_page->SetValueAt(insertPos, value);
-        return true;
+  auto leaf_guard = std::move(ctx.write_set_.back());
+  ctx.write_set_.pop_back();
+
+  auto leaf_page = leaf_guard.AsMut<LeafPage>();
+  if (leaf_page->GetSize() == leaf_page->GetMaxSize()) {
+    leaf_page->CompactTombstones();
+  }
+  if (leaf_page->GetSize() < leaf_page->GetMaxSize()) {
+    return InsertKVToLeafePage(leaf_page, key, value);
+  }
+  // split
+  auto [new_leaf_guard, new_leaf_id] = SplitLeafPage(leaf_page);
+
+  auto new_leaf_page = new_leaf_guard.template AsMut<LeafPage>();
+  if (comparator_(new_leaf_page->KeyAt(0), key) > 0) {
+    auto rc = InsertKVToLeafePage(leaf_page, key, value);
+    BUSTUB_ENSURE(rc, "Insert must usccess");
+  } else {
+    auto rc = InsertKVToLeafePage(new_leaf_page, key, value);
+    BUSTUB_ENSURE(rc, "Insert must usccess");
+  }
+
+  // TODO: propegate the change to the parent
+  return true;
+}
+
+FULL_INDEX_TEMPLATE_ARGUMENTS
+auto BPLUSTREE_TYPE::FindInsertPositionInLeafPage(LeafPage *page, const KeyType &key) const -> size_t {
+  size_t left = 0, right = page->GetSize();
+  while (left < right) {
+    auto mid = left + (right - left) / 2;
+    if (comparator_(page->KeyAt(mid), key) < 0) {
+      left = mid + 1;
+    } else {
+      right = mid;
     }
+  }
 
-    // no space left, have to merge or split
+  return left;
+}
+
+FULL_INDEX_TEMPLATE_ARGUMENTS
+auto BPLUSTREE_TYPE::FindInsertPositionInInternalPage(InternalPage *page, const KeyType &key) const -> size_t {
+  size_t left = 1, right = page->GetSize();
+  while (left < right) {
+    auto mid = left + (right - left) / 2;
+    if (comparator_(page->KeyAt(mid), key) < 0) {
+      left = mid + 1;
+    } else {
+      right = mid;
+    }
+  }
+  return left;
+}
+
+FULL_INDEX_TEMPLATE_ARGUMENTS
+void BPLUSTREE_TYPE::InsertToParent(const KeyType &key, const page_id_t page_id, Context &ctx) {
+  if (ctx.write_set_.empty()) {
+    // write set is empty meaning we just split the root
     // TODO
-    return true;
+  }
+
+  WritePageGuard parent_guard = std::move(ctx.write_set_.back());
 }
 
 FULL_INDEX_TEMPLATE_ARGUMENTS
-auto BPLUSTREE_TYPE::FindInsertPosition(LeafPage* page, const KeyType& key) const -> size_t {
-    size_t left = 0, right = page->GetSize();
-    while (left < right) {
-        auto mid = left + (right - left) / 2;
-        if (comparator_(page->KeyAt(mid), key) < 0) {
-            left = mid + 1;
-        } else {
-            right = mid;
-        }
+auto BPLUSTREE_TYPE::InsertKVToLeafePage(LeafPage *page, const KeyType &key, const ValueType &value) -> bool {
+  BUSTUB_ENSURE(page->GetSize() < page->GetMaxSize(), "Does not have enough space to insert to leaf page");
+  auto index_pos = FindInsertPositionInLeafPage(page, key);
+  if (static_cast<int>(index_pos) < page->GetSize() && comparator_(page->KeyAt(index_pos), key) == 0) {
+    // key exists
+    // check if it's in tombstones
+    if (page->IsIndexInTombstones(index_pos)) {
+      page->SetKeyAt(index_pos, key);
+      page->SetValueAt(index_pos, value);
+      page->RemoveIndexFromTombstones(index_pos);
+      return true;
     }
+    return false;  // duplicated key, not allowed
+  }
 
-    return left;
+  page->ShiftKeyAndValueRight(index_pos);
+  page->SetKeyAt(index_pos, key);
+  page->SetValueAt(index_pos, value);
+  page->SetSize(page->GetSize() + 1);
+  return true;
 }
 
 FULL_INDEX_TEMPLATE_ARGUMENTS
-auto BPLUSTREE_TYPE::IsKeyInTombstones(LeafPage* page, const KeyType& key) const -> bool {
-    for (const auto& k: page->GetTombstones()) {
-        if (comparator_(k, key) == 0){
-            return true;
-        }
-    }
-    return false;
+auto BPLUSTREE_TYPE::SplitLeafPage(LeafPage *old_page) -> std::pair<WritePageGuard, page_id_t> {
+  auto new_leaf_page_id = bpm_->NewPage();
+  auto new_leaf_guard = bpm_->WritePage(new_leaf_page_id);
+  auto new_leaf_page = new_leaf_guard.AsMut<LeafPage>();
+  new_leaf_page->Init(leaf_max_size_);
+
+  auto old_page_size = old_page->GetSize();
+  int mid = std::ceil(static_cast<double>(old_page_size) / 2);
+  for (auto i = mid; i < old_page_size; i += 1) {
+    new_leaf_page->SetKeyAt(i - mid, old_page->KeyAt(i));
+    new_leaf_page->SetValueAt(i - mid, old_page->ValueAt(i));
+  }
+
+  new_leaf_page->SetSize(old_page_size - mid);
+  old_page->SetSize(mid);
+
+  new_leaf_page->SetNextPageId(old_page->GetNextPageId());
+  old_page->SetNextPageId(new_leaf_page_id);
+  return {std::move(new_leaf_guard), new_leaf_page_id};
+}
+
+FULL_INDEX_TEMPLATE_ARGUMENTS
+auto BPLUSTREE_TYPE::SplitInternalPage(InternalPage *old_page) -> std::tuple<KeyType, WritePageGuard, page_id_t> {
+  auto new_internal_page_id = bpm_->NewPage();
+  auto new_internal_guard = bpm_->WritePage(new_internal_page_id);
+  auto new_internal_page = new_internal_guard.AsMut<InternalPage>();
+  new_internal_page->Init(internal_max_size_);
+
+  auto old_page_size = old_page->GetSize();
+  auto mid = std::ceil(static_cast<double>(old_page_size) / 2);
+  auto push_up_key = old_page->KeyAt(mid);
+
+  auto new_page_index = 0;
+  new_internal_page->SetValueAt(new_page_index, old_page->ValueAt(mid));
+
+  for (auto i = mid + 1; i < old_page_size; i += 1) {
+    new_internal_page->SetKeyAt(new_page_index + 1, old_page->KeyAt(i));
+    new_internal_page->SetValueAt(new_page_index + 1, old_page->ValueAt(i));
+    new_page_index += 1;
+  }
+
+  new_internal_page->SetSize(old_page_size - mid);
+  old_page->SetSize(mid);
+
+  return {push_up_key, std::move(new_internal_guard), new_internal_page_id};
 }
 
 /*****************************************************************************
