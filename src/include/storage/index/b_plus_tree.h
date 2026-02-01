@@ -32,6 +32,7 @@
 #include <queue>
 #include <shared_mutex>
 #include <string>
+#include <tuple>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -144,25 +145,30 @@ class BPlusTree {
   [[nodiscard]] auto FindInsertPositionInInternalPage(InternalPage *page, const KeyType &key) const -> size_t;
 
   /// @brief Push up the key and page id after split on INSERT
+  /// This can be called after splitting of either LEAF or INTERNAL notes
   void InsertToParent(const KeyType &key, const page_id_t page_id, Context &ctx);
 
   /// @brief Insert the key/value to the leaf node, increase the node size
-  /// Caller must ensure that there is space for this isnertion
-  auto InsertKVToLeafePage(LeafPage *page, const KeyType &key, const ValueType &value) -> bool;
-
-  /// @brief Insert the key/pageid to the internal node, increate the node size
   /// Caller must ensure that there is space for this insertion
-  void InsertKeyPageIdToInternalPage(InternalPage *page, const KeyType &key, const page_id_t page_id);
+  auto InsertKVToLeafPage(LeafPage *page, const KeyType &key, const ValueType &value) -> bool;
+
+  /// @brief Insert the key/value to the internal page, increase the node size
+  /// Caller must ensure that there is space for this insertion
+  auto InsertKVToInternalPage(InternalPage *page, const KeyType &key, const page_id_t page_id) -> bool;
 
   /// @brief Split the Leaf Page and set size for both old and new page, caller must ensure the condition to split is
   /// correct
   /// @return a unique ptr of the new leaf page WritePageGuard, caller must flush the new page
-  [[nodiscard]] auto SplitLeafPage(LeafPage *old_page) -> std::pair<WritePageGuard, page_id_t>;
+  [[nodiscard]] auto SplitLeafPage(LeafPage *old_page) -> std::tuple<KeyType, WritePageGuard, page_id_t>;
 
   /// @brief Split the Internal Page and set size for both old and new page, caller must ensure condition to split is
   /// correct
   /// @return tuple [pushed up key, guard of new internal page, page id of the new page]
   [[nodiscard]] auto SplitInternalPage(InternalPage *old_page) -> std::tuple<KeyType, WritePageGuard, page_id_t>;
+
+  /// @brief Create new root page, and update the ctx
+  /// @return the pair <WritePageGuard, page_id> of the new root page
+  [[nodiscard]] auto CreateNewRootAndUpdateHeader(Context &ctx) -> std::pair<WritePageGuard, page_id_t>;
 };
 
 /**
@@ -204,11 +210,11 @@ struct PrintableBPlusTree {
 // utility func to drain the queue
 
 template <typename T>
-inline void DrainQueueUntilSize(std::deque<T> &queue, const int size) {
+inline void DrainQueueUntilSize(std::deque<T> &queue, const size_t size) {
   static_assert(std::is_same_v<T, ReadPageGuard> || std::is_same_v<T, WritePageGuard>,
                 "Type must be read page guard or write page guard");
   while (queue.size() > size) {
-    queue.pop_front();
+    queue.pop_front();  // pop the guard top down
   }
 }
 

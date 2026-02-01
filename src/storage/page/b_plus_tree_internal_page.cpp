@@ -84,6 +84,20 @@ INDEX_TEMPLATE_ARGUMENTS
 void B_PLUS_TREE_INTERNAL_PAGE_TYPE::SetValueAt(const size_t index, const ValueType &value) {
   page_id_array_[index] = value;
 }
+
+INDEX_TEMPLATE_ARGUMENTS
+void B_PLUS_TREE_INTERNAL_PAGE_TYPE::ShiftKeyAndValueRight(const size_t index) {
+  BUSTUB_ENSURE(static_cast<int>(index) <= GetSize(),
+                "Index must be smaller or equal to the current size of page array");
+  BUSTUB_ENSURE(GetSize() < GetMaxSize(), "Current size can not be equal the max size");
+  if (static_cast<int>(index) == GetSize()) {
+    return;  // pos is already at the right most, nothing to shift
+  }
+  for (auto i = GetSize(); i > static_cast<int>(index); i -= 1) {
+    key_array_[i] = key_array_[i - 1];
+    page_id_array_[i] = page_id_array_[i - 1];
+  }
+}
 // valuetype for internalNode should be page id_t
 template class BPlusTreeInternalPage<GenericKey<4>, page_id_t, GenericComparator<4>>;
 template class BPlusTreeInternalPage<GenericKey<8>, page_id_t, GenericComparator<8>>;
