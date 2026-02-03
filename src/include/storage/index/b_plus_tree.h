@@ -37,13 +37,13 @@
 #include <utility>
 #include <vector>
 
-#include <concepts>
 #include "common/config.h"
 #include "common/macros.h"
 #include "storage/index/index_iterator.h"
 #include "storage/page/b_plus_tree_header_page.h"
 #include "storage/page/b_plus_tree_internal_page.h"
 #include "storage/page/b_plus_tree_leaf_page.h"
+#include "storage/page/b_plus_tree_page.h"
 #include "storage/page/page_guard.h"
 
 namespace bustub {
@@ -169,6 +169,46 @@ class BPlusTree {
   /// @brief Create new root page, and update the ctx
   /// @return the pair <WritePageGuard, page_id> of the new root page
   [[nodiscard]] auto CreateNewRootAndUpdateHeader(Context &ctx) -> std::pair<WritePageGuard, page_id_t>;
+
+  /// @brief Given a key, traverse all the way to the leaf node that contains the key
+  /// @note Caller must push root guard onto guard_set before calling. For Insert, caller handles header page
+  /// separately.
+  template <typename GuardType>
+  void TraverseNodesToLeaf(std::deque<GuardType> &guard_set, const KeyType &key, const bool release_parent) {
+    static_assert(std::is_same_v<GuardType, WritePageGuard> || std::is_same_v<GuardType, ReadPageGuard>,
+                  "GuardType must be either WritePageGuard or ReadPageGuard");
+
+    while (true) {
+      // Use As<> for read-only access during traversal (works for both guard types)
+      auto curr_page = guard_set.back().template As<BPlusTreePage>();
+      if (curr_page->IsLeafPage()) {
+        return;
+      }
+
+      auto curr_internal_page = guard_set.back().template As<InternalPage>();
+      auto left = 1, right = curr_internal_page->GetSize() - 1;
+      while (left <= right) {
+        auto mid = left + (right - left) / 2;
+        if (comparator_(key, curr_internal_page->KeyAt(mid)) >= 0) {
+          left = mid + 1;
+        } else {
+          right = mid - 1;
+        }
+      }
+
+      auto next_page_id = curr_internal_page->ValueAt(right);
+
+      if constexpr (std::is_same_v<GuardType, WritePageGuard>) {
+        guard_set.emplace_back(bpm_->WritePage(next_page_id));
+      } else {
+        guard_set.emplace_back(bpm_->ReadPage(next_page_id));
+      }
+
+      if (release_parent) {
+        guard_set.pop_front();
+      }
+    }
+  }
 };
 
 /**

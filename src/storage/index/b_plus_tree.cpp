@@ -70,38 +70,16 @@ auto BPLUSTREE_TYPE::GetValue(const KeyType &key, std::vector<ValueType> *result
   // Declaration of context instance. Using the Context is not necessary but advised.
   Context ctx;
 
-  // try to get and acquire read guard on the root page
-  ReadPageGuard guard = bpm_->ReadPage(header_page_id_);
-  auto header_page = guard.As<BPlusTreeHeaderPage>();
+  // Fetch header page and check if tree is empty
+  ReadPageGuard header_guard = bpm_->ReadPage(header_page_id_);
+  auto header_page = header_guard.As<BPlusTreeHeaderPage>();
   if (header_page->root_page_id_ == INVALID_PAGE_ID) {
     return false;
   }
 
-  ReadPageGuard root_guard = bpm_->ReadPage(header_page->root_page_id_);
-  ctx.read_set_.emplace_back(std::move(root_guard));
-
-  while (true) {
-    // traverse internal pages
-    auto temp_page = ctx.read_set_.back().As<BPlusTreePage>();
-    if (temp_page->IsLeafPage()) {
-      break;
-    }
-    auto curr_page = ctx.read_set_.back().As<InternalPage>();
-    auto size = curr_page->GetSize();
-    auto left = 1, right = size - 1;  // internal page index 0 is INVALID
-    while (left <= right) {
-      int mid = left + (right - left) / 2;
-      if (comparator_(key, curr_page->KeyAt(mid)) >= 0) {
-        left = mid + 1;
-      } else {
-        right = mid - 1;
-      }
-    }
-    auto next_child_page_id = curr_page->ValueAt(right);
-    ReadPageGuard curr_guard = bpm_->ReadPage(next_child_page_id);
-    ctx.read_set_.emplace_back(std::move(curr_guard));
-    ctx.read_set_.pop_front();
-  }
+  // Fetch root and traverse to leaf, releasing parent guards along the way
+  ctx.read_set_.emplace_back(bpm_->ReadPage(header_page->root_page_id_));
+  TraverseNodesToLeaf(ctx.read_set_, key, true);
 
   auto leaf_page = ctx.read_set_.back().As<LeafPage>();
   auto size = leaf_page->GetSize();
@@ -163,9 +141,10 @@ auto BPLUSTREE_TYPE::Insert(const KeyType &key, const ValueType &value) -> bool 
   ctx.root_page_id_ = header_page->root_page_id_;
 
   if (header_page->root_page_id_ == INVALID_PAGE_ID) {
-    // tree is empty
+    // tree is empty, create new leaf as root
     auto new_page_id = bpm_->NewPage();
     header_page->root_page_id_ = new_page_id;
+    ctx.root_page_id_ = new_page_id;
 
     WritePageGuard leaf_guard = bpm_->WritePage(new_page_id);
     auto leaf_page = leaf_guard.AsMut<LeafPage>();
@@ -173,30 +152,9 @@ auto BPLUSTREE_TYPE::Insert(const KeyType &key, const ValueType &value) -> bool 
 
     ctx.write_set_.emplace_back(std::move(leaf_guard));
   } else {
-    WritePageGuard root_guard = bpm_->WritePage(header_page->root_page_id_);
-    ctx.write_set_.emplace_back(std::move(root_guard));
-  }
-
-  // internal page traversal
-  while (true) {
-    auto temp_page = ctx.write_set_.back().As<BPlusTreePage>();
-    if (temp_page->IsLeafPage()) {
-      break;
-    }
-    auto curr_page = ctx.write_set_.back().As<InternalPage>();
-    auto size = curr_page->GetSize();
-    auto left = 1, right = size - 1;  // internal page index 0 is INVALID
-    while (left <= right) {
-      int mid = left + (right - left) / 2;
-      if (comparator_(key, curr_page->KeyAt(mid)) >= 0) {
-        left = mid + 1;
-      } else {
-        right = mid - 1;
-      }
-    }
-    auto next_child_page_id = curr_page->ValueAt(right);
-    WritePageGuard curr_guard = bpm_->WritePage(next_child_page_id);
-    ctx.write_set_.emplace_back(std::move(curr_guard));
+    // Fetch root and traverse to leaf, keeping all guards for potential splits
+    ctx.write_set_.emplace_back(bpm_->WritePage(header_page->root_page_id_));
+    TraverseNodesToLeaf(ctx.write_set_, key, false);
   }
 
   auto leaf_guard = std::move(ctx.write_set_.back());

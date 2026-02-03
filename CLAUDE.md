@@ -13,7 +13,7 @@
 | Task | Description | Status |
 |------|-------------|--------|
 | Task #1 | B+Tree Pages (Base, Internal, Leaf) | ✅ DONE |
-| Task #2 | B+Tree Operations (Insert, Delete, Search) | TODO |
+| Task #2 | B+Tree Operations (Insert, Delete, Search) | 🔄 IN PROGRESS |
 | Task #3 | Index Iterator | TODO |
 | Task #4 | Concurrency Control (latch crabbing) | TODO |
 
@@ -307,17 +307,10 @@ make check-clang-tidy-p2
 
 ## Implementation Status
 
-### Task #1: Pages - DONE ✓
+### Task #1: Pages - ✅ DONE
 - **BPlusTreePage**: `IsLeafPage()`, `GetSize()`, `SetSize()`, `GetMaxSize()`, `SetMaxSize()`, `GetMinSize()`
-- **InternalPage**: `Init()`, `KeyAt()`, `SetKeyAt()`, `ValueAt()`, `ValueIndex()`
-- **LeafPage**: `Init()`, `KeyAt()`, `GetTombstones()`, `GetNextPageId()`, `SetNextPageId()`
-
-**Added LeafPage helper methods:**
-```cpp
-void SetKeyAt(int index, const KeyType& key);
-auto RecordIDAt(int index) const -> ValueType;   // Named RecordIDAt, not ValueAt
-void SetRecordIDAt(int index, const ValueType& value);
-```
+- **InternalPage**: `Init()`, `KeyAt()`, `SetKeyAt()`, `ValueAt()`, `SetValueAt()`, `ValueIndex()`, `ShiftKeyAndValueRight()`
+- **LeafPage**: `Init()`, `KeyAt()`, `SetKeyAt()`, `ValueAt()`, `SetValueAt()`, `GetTombstones()`, `GetNextPageId()`, `SetNextPageId()`, `IsIndexInTombstones()`, `RemoveIndexFromTombstones()`, `ShiftKeyAndValueRight()`, `ShiftKeyAndValueLeft()`, `CompactTombstones()`
 
 **Tombstone handling - ✅ IMPLEMENTED:**
 ```cpp
@@ -330,43 +323,64 @@ CompactTombstones()             // Remove all tombstoned entries from arrays
 ### Task #2: Operations - IN PROGRESS
 - `GetValue()` - ✅ DONE
 - `IsEmpty()` - ✅ DONE
-- `Insert()` - IN PROGRESS (split functions done, propagation TODO)
+- `GetRootPageId()` - ✅ DONE
+- `Insert()` - ✅ DONE (complete with split propagation)
 - `Remove()` - TODO
-- `GetRootPageId()` - TODO
 
 **Helper methods added to BPlusTree:**
 ```cpp
 auto FindInsertPositionInLeafPage(LeafPage* page, const KeyType& key) const -> size_t;  // ✅ DONE
 auto FindInsertPositionInInternalPage(InternalPage* page, const KeyType& key) const -> size_t;  // ✅ DONE
-auto InsertKVToLeafePage(LeafPage* page, const KeyType& key, const ValueType& value) -> bool;  // ✅ DONE
-void InsertToParent(const KeyType& key, page_id_t page_id, Context& ctx);  // TODO: implement
-auto SplitLeafPage(LeafPage* old_page) -> std::pair<WritePageGuard, page_id_t>;  // ✅ DONE
+auto InsertKVToLeafPage(LeafPage* page, const KeyType& key, const ValueType& value) -> bool;  // ✅ DONE
+auto InsertKVToInternalPage(InternalPage* page, const KeyType& key, page_id_t page_id) -> bool;  // ✅ DONE
+void InsertToParent(const KeyType& key, page_id_t page_id, Context& ctx);  // ✅ DONE
+auto SplitLeafPage(LeafPage* old_page) -> std::tuple<KeyType, WritePageGuard, page_id_t>;  // ✅ DONE
 auto SplitInternalPage(InternalPage* old_page) -> std::tuple<KeyType, WritePageGuard, page_id_t>;  // ✅ DONE
+auto CreateNewRootAndUpdateHeader(Context& ctx) -> std::pair<WritePageGuard, page_id_t>;  // ✅ DONE
+
+// Template function for traversal (in header file)
+template <typename GuardType>
+void TraverseNodesToLeaf(std::deque<GuardType>& guard_set, const KeyType& key, bool release_parent);  // ✅ DONE
 ```
 
-**Insert Flow - ✅ IMPLEMENTED (except propagation):**
+**TraverseNodesToLeaf Usage:**
+- Caller must push root guard onto `guard_set` before calling
+- Uses `if constexpr` to handle ReadPageGuard vs WritePageGuard at compile time
+- `release_parent=true`: releases parent guards as we go down (for read operations)
+- `release_parent=false`: keeps all guards for potential splits (for write operations)
+
+**Insert Flow - ✅ FULLY IMPLEMENTED:**
 1. Fetch header, create root if empty OR fetch existing root
-2. Traverse internal pages to find leaf
+2. Traverse internal pages to find leaf (push guards to write_set_)
 3. Compact tombstones if leaf full
-4. If room: `InsertKVToLeafePage` (handles duplicates, tombstone reuse)
+4. If room: `InsertKVToLeafPage` (handles duplicates, tombstone reuse)
 5. If still full: `SplitLeafPage`, insert into correct half
-6. Propagate to parent (TODO)
+6. `InsertToParent()` propagates key up recursively:
+   - If write_set_ empty (was root): `CreateNewRootAndUpdateHeader()`
+   - If parent has room: `InsertKVToInternalPage()`
+   - If parent full: `SplitInternalPage()` and recurse
 
 **Split Functions - ✅ IMPLEMENTED:**
-- `SplitLeafPage`: Splits at `ceil(size/2)`, updates sibling pointers
-- `SplitInternalPage`: Splits at `ceil(size/2)`, returns push-up key
-- Both return new page guard + page_id, caller handles insertion into correct half
+- `SplitLeafPage`: Splits at `ceil(size/2)`, updates sibling pointers, returns pushed-up key
+- `SplitInternalPage`: Splits at `ceil(size/2)`, returns push-up key (key at mid is NOT copied to new page)
+- Both return tuple: (pushed_up_key, new_page_guard, new_page_id)
 
-**Helper methods added to LeafPage:**
+**Helper methods added to LeafPage (all ✅ DONE):**
 ```cpp
 void SetKeyAt(int index, const KeyType &key);
-auto RecordIDAt(int index) const -> ValueType;
+auto ValueAt(int index) const -> ValueType;
 void SetValueAt(int index, const ValueType &value);
 auto IsIndexInTombstones(const size_t index) const -> bool;
 void RemoveIndexFromTombstones(const size_t index);
 void ShiftKeyAndValueRight(const size_t index);
 void ShiftKeyAndValueLeft(const size_t index);
-void CompactTombstones();  // ✅ Removes all tombstoned entries, sorts descending to preserve indices
+void CompactTombstones();  // Removes all tombstoned entries, sorts descending to preserve indices
+```
+
+**Helper methods added to InternalPage (all ✅ DONE):**
+```cpp
+void SetValueAt(const size_t index, const ValueType &value);
+void ShiftKeyAndValueRight(const size_t index);
 ```
 
 ### Task #3: Iterator - TODO
@@ -451,11 +465,11 @@ if (root_id == INVALID_PAGE_ID) {
 ### Methods to Implement (Task #2)
 | Method | Status | Notes |
 |--------|--------|-------|
-| `IsEmpty()` | IN PROGRESS | Check if `root_page_id_ == INVALID_PAGE_ID` |
-| `GetValue(key, result)` | IN PROGRESS | Point query - traverse to leaf, use binary search |
-| `Insert(key, value)` | TODO | Insert with splits |
+| `IsEmpty()` | ✅ DONE | Check if `root_page_id_ == INVALID_PAGE_ID` |
+| `GetValue(key, result)` | ✅ DONE | Point query - traverse to leaf, use binary search |
+| `Insert(key, value)` | ✅ DONE | Insert with splits and propagation |
 | `Remove(key)` | TODO | Delete with merge/redistribute |
-| `GetRootPageId()` | TODO | Read from header page |
+| `GetRootPageId()` | ✅ DONE | Read from header page |
 
 ### GetValue() Implementation Pattern
 ```cpp
@@ -479,9 +493,9 @@ if (page->IsLeafPage()) {
 
 ---
 
-## Insert() Implementation Notes
+## Insert() Implementation Notes - ✅ COMPLETE
 
-### Current Flow
+### Implemented Flow
 1. Acquire write guard on header page
 2. If tree empty: create new leaf as root, init it, push guard to write_set_
 3. Traverse internal pages (binary search), push guards to write_set_
@@ -489,19 +503,19 @@ if (page->IsLeafPage()) {
 5. Check for duplicate (handle tombstone reuse)
 6. If space available: shift right and insert
 7. If no space: compact tombstones first, then split if still full
-8. After split: insert into correct half, propagate up (TODO)
+8. After split: insert into correct half, `InsertToParent()` propagates up
 
 ### Split Functions (✅ DONE)
 ```cpp
-// Leaf split: returns guard + page_id, updates sibling pointers
-auto SplitLeafPage(LeafPage* old_page) -> std::pair<WritePageGuard, page_id_t>;
+// Leaf split: returns pushed_up_key + guard + page_id, updates sibling pointers
+auto SplitLeafPage(LeafPage* old_page) -> std::tuple<KeyType, WritePageGuard, page_id_t>;
 
 // Internal split: returns push-up key + guard + page_id
 auto SplitInternalPage(InternalPage* old_page) -> std::tuple<KeyType, WritePageGuard, page_id_t>;
 ```
 - Both split at `ceil(size/2)` - left keeps first `mid` entries
-- After split, caller determines which half gets the new key (compare with first key of new page or push-up key)
-- Caller then inserts into appropriate half and propagates up
+- After split, caller determines which half gets the new key (compare with pushed-up key)
+- Caller inserts into appropriate half, then calls `InsertToParent()` to propagate
 
 ### Binary Search for Insert Position (lower_bound style)
 ```cpp
@@ -537,10 +551,21 @@ num_tombstones_--;
 // Note: i < num_tombstones_ - 1, NOT i < num_tombstones_
 ```
 
-### Known TODOs in Insert()
-- Fetch root page when tree is NOT empty - ✅ DONE
-- `DrainQueueUntilSize()` helper function - ✅ DONE (in b_plus_tree.h)
-- Split functions - ✅ DONE (`SplitLeafPage`, `SplitInternalPage`)
-- `InsertKVToLeafePage()` - ✅ DONE (handles duplicates, tombstone reuse with RemoveIndexFromTombstones)
-- `InsertToParent()` propagation logic - TODO
-- `CreateNewRoot()` when splitting root - TODO
+### Insert() Implementation - ✅ COMPLETE
+All insert-related functions are implemented:
+- Tree traversal with write guards
+- `InsertKVToLeafPage()` - handles duplicates, tombstone reuse
+- `InsertKVToInternalPage()` - shifts and inserts to internal node
+- `SplitLeafPage()` / `SplitInternalPage()` - splits at ceil(size/2)
+- `InsertToParent()` - recursive propagation up the tree
+- `CreateNewRootAndUpdateHeader()` - creates new root when splitting root node
+- `DrainQueueUntilSize()` - utility to release page guards
+
+### Next: Remove() Implementation
+Key considerations for Remove():
+- Find leaf containing key
+- If leaf has > min_size entries: simple delete (or add to tombstone buffer)
+- If leaf would become underfull:
+  - Try to redistribute from sibling
+  - If redistribute fails: coalesce (merge) with sibling
+  - Propagate changes up to parent (may trigger cascading merges)
