@@ -157,6 +157,12 @@ void B_PLUS_TREE_LEAF_PAGE_TYPE::CompactTombstones() {
   num_tombstones_ = 0;
 }
 
+FULL_INDEX_TEMPLATE_ARGUMENTS
+auto B_PLUS_TREE_LEAF_PAGE_TYPE::IsTombstonesFull() const -> bool { return num_tombstones_ >= LEAF_PAGE_TOMB_CNT; }
+
+FULL_INDEX_TEMPLATE_ARGUMENTS
+auto B_PLUS_TREE_LEAF_PAGE_TYPE::GetTombstonesSize() const -> size_t { return num_tombstones_; }
+
 template class BPlusTreeLeafPage<GenericKey<4>, RID, GenericComparator<4>>;
 
 template class BPlusTreeLeafPage<GenericKey<8>, RID, GenericComparator<8>>;

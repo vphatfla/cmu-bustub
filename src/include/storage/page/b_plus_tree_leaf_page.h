@@ -91,6 +91,12 @@ class BPlusTreeLeafPage : public BPlusTreePage {
 
   /// @brief Try to remove all the tombstone key-value
   void CompactTombstones();
+
+  /// @brief Return whether the leaf's tombstone is full
+  auto IsTombstonesFull() const -> bool;
+
+  /// @brief Return the size of this leaf page tombstone
+  auto GetTombstonesSize() const -> size_t;
   /**
    * @brief for test only return a string representing all keys in
    * this leaf page formatted as "(tombkey1, tombkey2, ...|key1,key2,key3,...)"

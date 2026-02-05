@@ -131,7 +131,6 @@ auto BPLUSTREE_TYPE::GetValue(const KeyType &key, std::vector<ValueType> *result
  */
 FULL_INDEX_TEMPLATE_ARGUMENTS
 auto BPLUSTREE_TYPE::Insert(const KeyType &key, const ValueType &value) -> bool {
-  // Declaration of context instance. Using the Context is not necessary but advised.
   Context ctx;
 
   // root header page
@@ -369,9 +368,53 @@ FULL_INDEX_TEMPLATE_ARGUMENTS
 void BPLUSTREE_TYPE::Remove(const KeyType &key) {
   // Declaration of context instance.
   Context ctx;
-  UNIMPLEMENTED("TODO(P2): Add implementation.");
+
+  // root header page
+  WritePageGuard guard = bpm_->WritePage(header_page_id_);
+  auto header_page = guard.AsMut<BPlusTreeHeaderPage>();
+  ctx.header_page_ = std::move(guard);
+  ctx.root_page_id_ = header_page->root_page_id_;
+
+  if (header_page->root_page_id_ == INVALID_PAGE_ID) {
+    // current page is empty
+    return;
+  } else {
+    ctx.write_set_.emplace_back(bpm_->WritePage(header_page->root_page_id_));
+    TraverseNodesToLeaf(ctx.write_set_, key, false);
+  }
+
+  auto leaf_guard = std::move(ctx.write_set_.back());
+  ctx.write_set_.pop_back();
+  auto leaf_page = leaf_guard.AsMut<LeafPage>();
+  auto pos = FindIndexOfKeyInLeafPage(leaf_page, key);
+
+  if (!pos.has_value()) {
+    // key does not exist in leaf page
+    return;
+  }
+
+  auto new_logical_size = leaf_page->GetSize() - leaf_page->GetTombstonesSize() - 1;
+
+  // check for size here
+  // TODO:
 }
 
+FULL_INDEX_TEMPLATE_ARGUMENTS
+auto BPLUSTREE_TYPE::FindIndexOfKeyInLeafPage(LeafPage *page, const KeyType &key) const -> std::optional<size_t> {
+  auto left = 0, right = page->GetSize() - 1;
+  while (left < right) {
+    auto mid = left + (right - left) / 2;
+    auto cpm = comparator_(page->KeyAt(mid), key);
+    if (cpm == 0) {
+      return mid;
+    } else if (cpm < 0) {
+      left = mid + 1;
+    } else {
+      right = mid - 1;
+    }
+  }
+  return std::nullopt;
+}
 /*****************************************************************************
  * INDEX ITERATOR
  *****************************************************************************/

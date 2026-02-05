@@ -561,11 +561,47 @@ All insert-related functions are implemented:
 - `CreateNewRootAndUpdateHeader()` - creates new root when splitting root node
 - `DrainQueueUntilSize()` - utility to release page guards
 
-### Next: Remove() Implementation
-Key considerations for Remove():
-- Find leaf containing key
-- If leaf has > min_size entries: simple delete (or add to tombstone buffer)
-- If leaf would become underfull:
-  - Try to redistribute from sibling
-  - If redistribute fails: coalesce (merge) with sibling
-  - Propagate changes up to parent (may trigger cascading merges)
+### Remove() Implementation - TODO
+
+**Key Concepts:**
+- `logical_size = size_ - num_tombstones_` (actual valid entries)
+- `min_size = ceil(max_size / 2)` for leaves
+- Tombstone buffer size = `NumTombs` template parameter (compile-time, default 0)
+
+**Remove() Flow:**
+```
+Remove(key):
+1. Tree empty → return
+2. Find leaf, find key's index (binary search)
+3. Key not found → return
+4. new_logical_size = (size_ - num_tombstones_) - 1
+
+5. If new_logical_size < min_size:
+   → Go directly to redistribute/merge
+   → Handle deletion AS PART OF that process
+   → (no point compacting first if reorganizing anyway)
+
+6. If new_logical_size >= min_size:
+   - If tombstone buffer has space → add index to buffer, return
+   - If tombstone buffer full → compact all tombstones + delete incoming key, return
+```
+
+**Why check logical_size FIRST (step 5 before 6):**
+- Avoids redundant array shifts when redistribute/merge is inevitable
+- Redistribute/merge will reorganize data anyway
+- Can skip the deleted key when copying data during redistribute/merge
+
+**Optimization for tombstone buffer full case:**
+- Instead of: CompactTombstones() then delete incoming key (2 passes)
+- Do: Collect all tombstone indices + incoming key index, delete all in one pass
+- Sort indices descending before removal to preserve index validity
+
+**Redistribute vs Merge decision:**
+- Try redistribute first (borrow from sibling)
+- If sibling also at min_size → must merge/coalesce
+- Compact recipient's tombstones before merge (per spec)
+
+**Propagation to parent:**
+- After merge: remove key from parent (may trigger cascading merges)
+- Update parent's child pointers accordingly
+- If root becomes empty after merge → update header to new root

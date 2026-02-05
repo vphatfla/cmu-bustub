@@ -141,6 +141,7 @@ class BPlusTree {
   int internal_max_size_;
   page_id_t header_page_id_;
 
+  [[nodiscard]] auto FindIndexOfKeyInLeafPage(LeafPage *page, const KeyType &key) const -> std::optional<size_t>;
   [[nodiscard]] auto FindInsertPositionInLeafPage(LeafPage *page, const KeyType &key) const -> size_t;
   [[nodiscard]] auto FindInsertPositionInInternalPage(InternalPage *page, const KeyType &key) const -> size_t;
 
