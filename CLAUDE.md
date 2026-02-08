@@ -323,41 +323,59 @@ make check-clang-tidy-p2
 ### Task #1: Pages - ✅ DONE
 - **BPlusTreePage**: `IsLeafPage()`, `GetSize()`, `SetSize()`, `GetMaxSize()`, `SetMaxSize()`, `GetMinSize()`
 - **InternalPage**: `Init()`, `KeyAt()`, `SetKeyAt()`, `ValueAt()`, `SetValueAt()`, `ValueIndex()`, `ShiftKeyAndValueRight()`
-- **LeafPage**: `Init()`, `KeyAt()`, `SetKeyAt()`, `ValueAt()`, `SetValueAt()`, `GetTombstones()`, `GetNextPageId()`, `SetNextPageId()`, `IsIndexInTombstones()`, `RemoveIndexFromTombstones()`, `ShiftKeyAndValueRight()`, `ShiftKeyAndValueLeft()`, `CompactTombstones()`
+- **LeafPage**: `Init()`, `KeyAt()`, `SetKeyAt()`, `ValueAt()`, `SetValueAt()`, `GetTombstones()`, `GetNextPageId()`, `SetNextPageId()`, `IsIndexInTombstones()`, `RemoveIndexFromTombstones()`, `ShiftKeyAndValueRight()`, `ShiftKeyAndValueLeft()`
 
-**Tombstone handling - ⚠️ NEEDS UPDATE:**
+**Tombstone handling - ✅ IMPLEMENTED:**
 ```cpp
-IsIndexInTombstones(index)         // Check if index is in tombstone buffer
-RemoveIndexFromTombstones(index)   // Remove index from tombstone buffer
-AddIndexToTombstones(index)        // Add index to tombstone buffer
-GetIndexesInTombstones()           // Get all tombstone indices
-ApplyOldestTombstone()             // ❌ TODO: Apply ONLY oldest tombstone when buffer full
-ClearTombstones()                  // ❌ TODO: Clear tombstone buffer (for utility only)
-CompactTombstones()                // ❌ DEPRECATED: Should NEVER be called per spec!
+IsIndexInTombstones(index)           // ✅ Check if index is in tombstone buffer
+RemoveIndexFromTombstones(index)     // ✅ Remove index from tombstone buffer
+AddIndexToTombstones(index)          // ✅ Add index to tombstone buffer
+GetIndexesInTombstones()             // ✅ Get all tombstone indices as vector
+GetTombstones()                      // ✅ Get all tombstoned KEYS as vector
+IsTombstonesFull()                   // ✅ Check if buffer is at capacity
+GetTombstonesSize()                  // ✅ Get current tombstone count
+ClearTombstones()                    // ✅ Reset tombstone buffer (for split operations)
+DeleteOldestKeyInTombstones()        // ✅ FIFO eviction - apply oldest tombstone
+IncrementAllTombstonesIndexes()      // ✅ For redistribute from left sibling
+DecreaseAllTombstonesIndexes()       // ✅ For redistribute from right sibling
 ```
-**CRITICAL:** Never call `CompactTombstones()` - tombstones must be maintained across all operations!
 
 ### Task #2: Operations - IN PROGRESS
 - `GetValue()` - ✅ DONE
 - `IsEmpty()` - ✅ DONE
 - `GetRootPageId()` - ✅ DONE
-- `Insert()` - ⚠️ NEEDS FIX (remove CompactTombstones call, fix SplitLeafPage to distribute tombstones)
-- `Remove()` - 🔄 IN PROGRESS (basic logic done, needs ApplyOldestTombstone + merge/redistribute)
+- `Insert()` - ✅ DONE (with tombstone distribution on split)
+- `Remove()` - 🔄 IN PROGRESS (leaf-level done, needs cascading to parent)
 
 **Helper methods added to BPlusTree:**
 ```cpp
-auto FindInsertPositionInLeafPage(LeafPage* page, const KeyType& key) const -> size_t;  // ✅ DONE
-auto FindInsertPositionInInternalPage(InternalPage* page, const KeyType& key) const -> size_t;  // ✅ DONE
-auto InsertKVToLeafPage(LeafPage* page, const KeyType& key, const ValueType& value) -> bool;  // ✅ DONE
-auto InsertKVToInternalPage(InternalPage* page, const KeyType& key, page_id_t page_id) -> bool;  // ✅ DONE
-void InsertToParent(const KeyType& key, page_id_t page_id, Context& ctx);  // ✅ DONE
-auto SplitLeafPage(LeafPage* old_page) -> std::tuple<KeyType, WritePageGuard, page_id_t>;  // ✅ DONE
-auto SplitInternalPage(InternalPage* old_page) -> std::tuple<KeyType, WritePageGuard, page_id_t>;  // ✅ DONE
-auto CreateNewRootAndUpdateHeader(Context& ctx) -> std::pair<WritePageGuard, page_id_t>;  // ✅ DONE
+// Insert helpers - ✅ ALL DONE
+auto FindInsertPositionInLeafPage(LeafPage* page, const KeyType& key) const -> size_t;
+auto FindInsertPositionInInternalPage(InternalPage* page, const KeyType& key) const -> size_t;
+auto InsertKVToLeafPage(LeafPage* page, const KeyType& key, const ValueType& value) -> bool;
+auto InsertKVToInternalPage(InternalPage* page, const KeyType& key, page_id_t page_id) -> bool;
+void InsertToParent(const KeyType& key, page_id_t page_id, Context& ctx);
+auto SplitLeafPage(LeafPage* old_page) -> std::tuple<KeyType, WritePageGuard, page_id_t>;
+auto SplitInternalPage(InternalPage* old_page) -> std::tuple<KeyType, WritePageGuard, page_id_t>;
+auto CreateNewRootAndUpdateHeader(Context& ctx) -> std::pair<WritePageGuard, page_id_t>;
+
+// Remove helpers - ✅ LEAF LEVEL DONE
+auto FindIndexOfKeyInLeafPage(LeafPage* page, const KeyType& key) const -> std::optional<size_t>;
+auto GetLeftSiblingLeafPage(InternalPage* parent, int child_index) -> std::optional<WritePageGuard>;
+auto GetRightSiblingLeafPage(InternalPage* parent, int child_index) -> std::optional<WritePageGuard>;
+auto RedistributeLeafPageLeftSibling(LeafPage* curr, LeafPage* sibling) -> bool;
+auto RedistributeLeafPageRightSibling(LeafPage* curr, LeafPage* sibling) -> bool;
+void MergeTwoLeafPages(LeafPage* left_page, LeafPage* right_page);
+
+// TODO: Internal page remove helpers (for cascading deletes)
+// void RemoveKeyFromInternalPage(InternalPage* page, int key_index);
+// auto RedistributeInternalPageLeftSibling(...) -> bool;
+// auto RedistributeInternalPageRightSibling(...) -> bool;
+// void MergeTwoInternalPages(...);
 
 // Template function for traversal (in header file)
 template <typename GuardType>
-void TraverseNodesToLeaf(std::deque<GuardType>& guard_set, const KeyType& key, bool release_parent);  // ✅ DONE
+void TraverseNodesToLeaf(std::deque<GuardType>& guard_set, const KeyType& key, bool release_parent);
 ```
 
 **TraverseNodesToLeaf Usage:**
@@ -384,26 +402,32 @@ void TraverseNodesToLeaf(std::deque<GuardType>& guard_set, const KeyType& key, b
 - `SplitInternalPage`: Splits at `ceil(size/2)`, returns push-up key (key at mid is NOT copied to new page)
 - Both return tuple: (pushed_up_key, new_page_guard, new_page_id)
 
-**Helper methods added to LeafPage:**
+**Helper methods added to LeafPage (all ✅ DONE):**
 ```cpp
-void SetKeyAt(int index, const KeyType &key);                          // ✅ DONE
-auto ValueAt(int index) const -> ValueType;                            // ✅ DONE
-void SetValueAt(int index, const ValueType &value);                    // ✅ DONE
-auto IsIndexInTombstones(const size_t index) const -> bool;            // ✅ DONE
-void RemoveIndexFromTombstones(const size_t index);                    // ✅ DONE
-void AddIndexToTombstones(const size_t index);                         // ✅ DONE
-auto GetIndexesInTombstones() const -> std::vector<size_t>;            // ✅ DONE
-void ShiftKeyAndValueRight(const size_t index);                        // ✅ DONE
-void ShiftKeyAndValueLeft(const size_t index);                         // ✅ DONE
-void ApplyOldestTombstone();                                           // ❌ TODO
-void ClearTombstones();                                                // ❌ TODO
-void CompactTombstones();  // ⚠️ DEPRECATED - DO NOT USE!
+void SetKeyAt(int index, const KeyType &key);
+auto ValueAt(int index) const -> ValueType;
+void SetValueAt(int index, const ValueType &value);
+auto IsIndexInTombstones(const size_t index) const -> bool;
+void RemoveIndexFromTombstones(const size_t index);
+void AddIndexToTombstones(const size_t index);
+auto GetIndexesInTombstones() const -> std::vector<size_t>;
+auto GetTombstones() const -> std::vector<KeyType>;  // Returns tombstoned KEYS
+auto IsTombstonesFull() const -> bool;
+auto GetTombstonesSize() const -> size_t;
+auto GetMinSize() const -> size_t;  // ceil(max_size / 2)
+void ShiftKeyAndValueRight(const size_t index);
+void ShiftKeyAndValueLeft(const size_t index);
+void DeleteOldestKeyInTombstones();  // FIFO eviction with index adjustment
+void ClearTombstones();              // Reset buffer for split operations
+void IncrementAllTombstonesIndexes();  // For redistribute from left
+void DecreaseAllTombstonesIndexes();   // For redistribute from right
 ```
 
 **Helper methods added to InternalPage (all ✅ DONE):**
 ```cpp
 void SetValueAt(const size_t index, const ValueType &value);
 void ShiftKeyAndValueRight(const size_t index);
+auto ValueIndex(const ValueType &value) const -> int;  // Find child index
 ```
 
 ### Task #3: Iterator - TODO
@@ -516,16 +540,16 @@ if (page->IsLeafPage()) {
 
 ---
 
-## Insert() Implementation Notes - ✅ COMPLETE
+## Insert() Implementation - ✅ COMPLETE
 
-### Implemented Flow (⚠️ NEEDS FIX - step 7)
+### Implemented Flow
 1. Acquire write guard on header page
 2. If tree empty: create new leaf as root, init it, push guard to write_set_
 3. Traverse internal pages (binary search), push guards to write_set_
 4. At leaf: find insert position via binary search
-5. Check for duplicate (handle tombstone reuse)
+5. Check for duplicate (handle tombstone reuse - if key exists but tombstoned, reuse slot)
 6. If space available: shift right and insert
-7. If no space: split page while **maintaining tombstones** (distribute to both pages)
+7. If no space: split page with **tombstone distribution** to both pages
 8. After split: insert into correct half, `InsertToParent()` propagates up
 
 ### Split Functions (✅ DONE)
@@ -539,6 +563,7 @@ auto SplitInternalPage(InternalPage* old_page) -> std::tuple<KeyType, WritePageG
 - Both split at `ceil(size/2)` - left keeps first `mid` entries
 - After split, caller determines which half gets the new key (compare with pushed-up key)
 - Caller inserts into appropriate half, then calls `InsertToParent()` to propagate
+- **SplitLeafPage distributes tombstones:** indices < mid stay, indices >= mid move (adjusted by -mid)
 
 ### Binary Search for Insert Position (lower_bound style)
 ```cpp
@@ -574,27 +599,25 @@ num_tombstones_--;
 // Note: i < num_tombstones_ - 1, NOT i < num_tombstones_
 ```
 
-### Insert() Implementation - ⚠️ NEEDS FIX
-Insert-related functions status:
+### Insert() Implementation - ✅ COMPLETE
+All insert-related functions implemented:
 - Tree traversal with write guards - ✅ DONE
 - `InsertKVToLeafPage()` - handles duplicates, tombstone reuse - ✅ DONE
 - `InsertKVToInternalPage()` - shifts and inserts to internal node - ✅ DONE
-- `SplitLeafPage()` - ⚠️ NEEDS FIX: must distribute tombstones to both pages
+- `SplitLeafPage()` - splits at ceil(size/2), **distributes tombstones** - ✅ DONE
 - `SplitInternalPage()` - splits at ceil(size/2) - ✅ DONE
 - `InsertToParent()` - recursive propagation up the tree - ✅ DONE
 - `CreateNewRootAndUpdateHeader()` - creates new root when splitting root node - ✅ DONE
 - `DrainQueueUntilSize()` - utility to release page guards - ✅ DONE
 
-**BUG:** Current Insert() calls `CompactTombstones()` before split - this violates spec!
-
-### Remove() Implementation - TODO
+### Remove() Implementation - 🔄 LEAF LEVEL DONE
 
 **Key Concepts:**
 - `logical_size = size_ - num_tombstones_` (actual valid entries)
 - `min_size = ceil(max_size / 2)` for leaves
 - Tombstone buffer size = `NumTombs` template parameter (compile-time, default 0)
 
-**Remove() Flow (CORRECTED):**
+**Remove() Flow - ✅ IMPLEMENTED:**
 ```
 Remove(key):
 1. Tree empty → return
@@ -603,53 +626,80 @@ Remove(key):
 4. Key already tombstoned → return (already deleted)
 5. new_logical_size = (size_ - num_tombstones_) - 1
 
-6. If new_logical_size < min_size:
-   → Go directly to redistribute/merge
-   → Mark deletion during that process
-   → Maintain tombstones across the operation
-
-7. If new_logical_size >= min_size (page stays valid):
+6. If new_logical_size >= min_size (page stays valid):
    - If tombstone buffer has space → add index to buffer, return
-   - If tombstone buffer full → ApplyOldestTombstone(), then add new index to buffer
+   - If tombstone buffer full → DeleteOldestKeyInTombstones(), re-find key, add to buffer
+
+7. If new_logical_size < min_size:
+   - Add key to tombstone first
+   - If root page (write_set empty) → can be underfull, check if completely empty
+   - Try redistribute from left sibling → update parent separator key
+   - Try redistribute from right sibling → update parent separator key
+   - If neither works → merge with sibling
+   - TODO: Cascade delete to parent after merge
 ```
 
-**Why check logical_size FIRST:**
-- Avoids unnecessary operations when redistribute/merge is inevitable
-- Redistribute/merge will reorganize data anyway
-- Can handle deletion as part of that process
+**Redistribute Functions - ✅ IMPLEMENTED with defensive guards:**
+```cpp
+RedistributeLeafPageLeftSibling(curr_page, sibling_page):
+  - Check sibling can spare (logical_size > min_size)
+  - Loop while curr underfull AND sibling can spare:
+    - Take rightmost entry from sibling
+    - Insert at index 0 of curr (shift right first)
+    - IncrementAllTombstonesIndexes() on curr
+    - Transfer tombstone if borrowed entry was tombstoned
+  - Return true if curr reached min_size
 
-**Buffer Full Handling:**
-- When buffer full: apply ONLY the oldest tombstone (FIFO eviction)
-- Then add the new deletion index to buffer
-- **NEVER** compact all tombstones!
+RedistributeLeafPageRightSibling(curr_page, sibling_page):
+  - Check sibling can spare (logical_size > min_size)
+  - Loop while curr underfull AND sibling can spare:
+    - Take leftmost entry from sibling
+    - Append to end of curr
+    - ShiftKeyAndValueLeft(0) on sibling
+    - DecreaseAllTombstonesIndexes() on sibling
+    - Transfer tombstone if borrowed entry was tombstoned
+  - Return true if curr reached min_size
+```
 
-**Redistribute vs Merge decision:**
-- Try redistribute first (borrow from sibling)
-- If sibling also at min_size → must merge/coalesce
-- **Maintain tombstones from both pages** during merge/redistribute
+**MergeTwoLeafPages - ✅ IMPLEMENTED with key-based tombstone rebuild:**
+```cpp
+MergeTwoLeafPages(left_page, right_page):
+  1. Collect tombstoned KEYS from both pages (not indices)
+  2. Clear left's tombstones for fresh rebuild
+  3. Copy all entries from right to left
+  4. Set combined size
+  5. Rebuild tombstones by finding each key's current index:
+     - Add left's tombstones first (older, FIFO order)
+     - Add right's tombstones (newer)
+     - Evict if full → DeleteOldestKeyInTombstones adjusts indices
+  6. Update sibling pointer (left.next = right.next)
+```
+**Why key-based:** Avoids complex index offset tracking when evictions shift the array.
 
-**Merge/Redistribute Tombstone Handling:**
-- Merge: copy ALL entries (including tombstoned) + copy tombstone buffers with adjusted indices
-- Redistribute: move tombstone with borrowed entry if applicable
-- **NEVER compact tombstones** during these operations!
+**TODO - Cascading to Parent:**
+After leaf merge, must remove separator key from parent:
+```
+RemoveKeyFromInternalPage(parent, key_index):
+├── Shift keys/values left to delete entry
+├── Decrease size
+├── If parent is root:
+│   ├── Size >= 2 → Done (root can be underfull)
+│   └── Size == 1 → Make only child the new root
+└── If parent is not root:
+    ├── Size >= min_size → Done
+    └── Size < min_size → Redistribute or merge internal pages
+        └── Recursively cascade up
+```
 
-**Propagation to parent:**
-- After merge: remove key from parent (may trigger cascading merges)
-- Update parent's child pointers accordingly
-- If root becomes empty after merge → update header to new root
+**Internal Page Merge (different from leaf):**
+- Separator key from parent is PULLED DOWN into merged node
+- No tombstones on internal pages
 
 ---
 
-## 🔴 CRITICAL: Tombstone Spec Clarification (Session 2026-02-08)
+## Tombstone Spec Clarification (Session 2026-02-08)
 
-### Key Findings:
-
-**WRONG UNDERSTANDING (previous):**
-- ❌ Compact all tombstones before split to avoid unnecessary splits
-- ❌ Compact recipient's tombstones before merge
-- ❌ When tombstone buffer full, compact all tombstones
-
-**CORRECT UNDERSTANDING (per spec):**
+### Key Rules (per spec):
 - ✅ Tombstones MUST be maintained across ALL operations (split/merge/redistribute)
 - ✅ When buffer full: apply ONLY the OLDEST tombstone (FIFO eviction)
 - ✅ **NEVER** compact all tombstones during normal operations
@@ -674,57 +724,47 @@ Cost analysis:
 - Iterating k tombstones is negligible vs shifting n entries
 ```
 
-**Why iteration on tombstones is OK:**
-- When k=3, adjusting tombstones = ~6 operations
-- Shifting n=100 entries = ~100 operations
-- Trade 6 ops for 100 ops = massive win!
-- Additionally reduces disk I/O (critical for B+ trees)
-
-### Required Fixes:
-
-1. **Insert()**: Remove `CompactTombstones()` call before split
-2. **SplitLeafPage()**: Add tombstone distribution logic
-3. **LeafPage**: Implement `ApplyOldestTombstone()` method
-4. **Remove()**: Use `ApplyOldestTombstone()` when buffer full (not CompactTombstones)
-5. **Merge/Redistribute**: Preserve and copy tombstones from both pages
-
-### Method Status:
-- `CompactTombstones()` - ⚠️ **DEPRECATED**: Should never be called!
-- `ApplyOldestTombstone()` - ❌ **TODO**: Apply only oldest tombstone (FIFO eviction)
-- `ClearTombstones()` - ❌ **TODO**: Utility to clear buffer (for split/merge operations)
+### Implementation Status - ✅ ALL DONE:
+- `DeleteOldestKeyInTombstones()` - ✅ FIFO eviction with index adjustment
+- `ClearTombstones()` - ✅ Reset buffer for split operations
+- `IncrementAllTombstonesIndexes()` - ✅ For redistribute from left
+- `DecreaseAllTombstonesIndexes()` - ✅ For redistribute from right
+- `SplitLeafPage()` - ✅ Distributes tombstones to both pages
+- `MergeTwoLeafPages()` - ✅ Key-based tombstone rebuild
+- `RedistributeLeafPageLeftSibling()` - ✅ With tombstone transfer
+- `RedistributeLeafPageRightSibling()` - ✅ With tombstone transfer
 
 ---
 
-## ApplyOldestTombstone() Implementation
+## DeleteOldestKeyInTombstones() Implementation - ✅ DONE
 
-**Critical method for maintaining tombstone FIFO behavior:**
+**Critical method for FIFO tombstone eviction (in b_plus_tree_leaf_page.cpp):**
 
 ```cpp
-void ApplyOldestTombstone() {
-  BUSTUB_ENSURE(num_tombstones_ > 0, "No tombstones to apply");
+void DeleteOldestKeyInTombstones() {
+  auto pos = tombstones_[0];  // Oldest tombstone index
+  auto size = static_cast<size_t>(GetSize());
 
-  // STEP 1: Get oldest tombstone (at index 0)
-  auto oldest_index = tombstones_[0];
+  // STEP 1: Physically delete entry at pos (shift array left)
+  for (size_t i = pos; i < size - 1; i += 1) {
+    key_array_[i] = key_array_[i + 1];
+    rid_array_[i] = rid_array_[i + 1];
+  }
+  SetSize(size - 1);
 
-  // STEP 2: Physically delete that entry from key/value arrays
-  ShiftKeyAndValueLeft(oldest_index);
-  SetSize(GetSize() - 1);
-
-  // STEP 3 & 4: Remove tombstones[0] and adjust remaining tombstone indices
-  for (size_t i = 0; i < num_tombstones_ - 1; i++) {
-    tombstones_[i] = tombstones_[i + 1];  // Shift tombstone buffer left
-
-    // CRITICAL: Adjust indices - if a tombstone index > deleted index, decrement it
-    if (tombstones_[i] > oldest_index) {
-      tombstones_[i]--;
+  // STEP 2: Remove tombstones[0] and adjust remaining indices
+  for (size_t i = 0; i < num_tombstones_ - 1; i += 1) {
+    tombstones_[i] = tombstones_[i + 1];  // Shift buffer left
+    if (tombstones_[i] > pos) {
+      tombstones_[i] -= 1;  // Adjust for shifted array
     }
   }
-  num_tombstones_--;
+  num_tombstones_ -= 1;
 }
 ```
 
 **Why index adjustment is needed:**
-- After deleting entry at `oldest_index`, all entries after it shift left
+- After deleting entry at `pos`, all entries after it shift left
 - Tombstone indices pointing to entries after the deleted one must be decremented
 - Example: Delete index 2 → indices [0,1,2,3,4] become [0,1,3,4] → tombstone at old index 4 now at index 3
 
@@ -735,67 +775,134 @@ void ApplyOldestTombstone() {
 - **Trade-off: 6 operations on tombstones vs 100+ operations on arrays**
 - Since k << n, tombstone iteration is negligible
 
-**Efficiency breakdown:**
+---
+
+## Split/Merge/Redistribute Tombstone Handling - ✅ ALL IMPLEMENTED
+
+### SplitLeafPage Tombstone Distribution (b_plus_tree.cpp:307-315):
+```cpp
+// Distribute tombstones to both pages based on which half they belong to
+auto old_tombstones_indexes = old_page->GetIndexesInTombstones();
+old_page->ClearTombstones();
+for (const auto &i : old_tombstones_indexes) {
+  if (i < mid) {
+    old_page->AddIndexToTombstones(i);  // Stays in old page
+  } else {
+    new_leaf_page->AddIndexToTombstones(i - mid);  // Moves to new page (adjusted)
+  }
+}
 ```
-Without tombstones (3 deletions):
-  - Delete 1: Shift 100 entries
-  - Delete 2: Shift 100 entries
-  - Delete 3: Shift 100 entries
-  Total: 300 operations
 
-With tombstones (3 deletions):
-  - Delete 1: Add to buffer (1 op)
-  - Delete 2: Add to buffer (1 op)
-  - Delete 3: Add to buffer (1 op)
-  - Buffer full on Delete 4:
-    * Iterate 3 tombstones (3 ops)
-    * Shift 100 entries (100 ops)
-  Total for 4 deletions: 106 operations
+### MergeTwoLeafPages - Key-Based Approach (b_plus_tree.cpp:599-638):
+```cpp
+// Collect tombstoned KEYS (not indices) from both pages
+auto left_tomb_keys = left_page->GetTombstones();
+auto right_tomb_keys = right_page->GetTombstones();
+left_page->ClearTombstones();
 
-Amortized per deletion: 106/4 ≈ 26 ops vs 100 ops = 4x speedup!
+// Copy all entries from right to left
+for (int i = 0; i < right_size; i++) {
+  left_page->SetKeyAt(left_size + i, right_page->KeyAt(i));
+  left_page->SetValueAt(left_size + i, right_page->ValueAt(i));
+}
+left_page->SetSize(left_size + right_size);
+
+// Rebuild tombstones by finding each key's current index
+for (const auto &key : left_tomb_keys) {
+  if (left_page->IsTombstonesFull()) {
+    left_page->DeleteOldestKeyInTombstones();
+  }
+  auto idx = FindIndexOfKeyInLeafPage(left_page, key);
+  if (idx.has_value()) {
+    left_page->AddIndexToTombstones(idx.value());
+  }
+}
+// Same for right_tomb_keys...
+```
+**Why key-based:** When evictions happen, they shift the array. Finding keys by value avoids tracking index offsets.
+
+### RedistributeLeafPageLeftSibling Tombstone Handling:
+```cpp
+// Borrow from rightmost of left sibling, insert at index 0 of curr
+curr_page->ShiftKeyAndValueRight(0);
+curr_page->SetKeyAt(0, key);
+curr_page->SetValueAt(0, value);
+curr_page->IncrementAllTombstonesIndexes();  // All existing tombstones shift right
+
+// If borrowed entry was tombstoned, transfer the tombstone
+if (sibling_page->IsIndexInTombstones(sibling_index)) {
+  if (curr_page->IsTombstonesFull()) {
+    curr_page->DeleteOldestKeyInTombstones();
+  }
+  curr_page->AddIndexToTombstones(0);  // New entry is at index 0
+  sibling_page->RemoveIndexFromTombstones(sibling_index);
+}
+```
+
+### RedistributeLeafPageRightSibling Tombstone Handling:
+```cpp
+// Borrow from leftmost of right sibling, append to end of curr
+curr_page->SetKeyAt(curr_index, key);
+curr_page->SetValueAt(curr_index, value);
+
+sibling_page->ShiftKeyAndValueLeft(0);
+// If borrowed entry was tombstoned, transfer the tombstone
+if (sibling_page->IsIndexInTombstones(0)) {
+  if (curr_page->IsTombstonesFull()) {
+    curr_page->DeleteOldestKeyInTombstones();
+  }
+  curr_page->AddIndexToTombstones(curr_index);
+  sibling_page->RemoveIndexFromTombstones(0);
+}
+sibling_page->DecreaseAllTombstonesIndexes();  // All sibling tombstones shift left
 ```
 
 ---
 
-## Split/Merge Tombstone Distribution
+## TODO: Internal Page Cascading Delete
 
-### SplitLeafPage Tombstone Handling:
-```cpp
-auto SplitLeafPage(LeafPage* old_page) {
-  // ... create new page, split at mid ...
+After merging leaf pages, the separator key must be removed from parent:
 
-  // Distribute tombstones
-  auto tombstones = old_page->GetIndexesInTombstones();
-  old_page->ClearTombstones();  // Clear from old page
+```
+Internal Page Merge (different from leaf merge):
+├── Separator key from parent is PULLED DOWN into merged node
+├── No tombstones on internal pages
+└── May cascade further up the tree
 
-  for (auto tomb_idx : tombstones) {
-    if (tomb_idx < mid) {
-      // Stays in old page (same index)
-      old_page->AddIndexToTombstones(tomb_idx);
-    } else {
-      // Moves to new page (adjust index)
-      new_page->AddIndexToTombstones(tomb_idx - mid);
-    }
-  }
-
-  // ... return tuple ...
-}
+RemoveKeyFromInternalPage(parent, key_index, ctx):
+1. Shift keys/values left to remove entry at key_index
+2. Decrease parent size
+3. If parent is root:
+   - Size >= 2 → Done
+   - Size == 1 → Only child becomes new root, update header
+4. If parent not root AND size < min_size:
+   - Try redistribute from internal sibling
+   - If can't redistribute → merge internal pages
+   - Recursively RemoveKeyFromInternalPage on grandparent
 ```
 
-### Merge Tombstone Handling:
-```cpp
-// Merge right sibling into current (recipient)
-// Copy ALL physical entries
-auto curr_size = leaf_page->GetSize();
-for (int i = 0; i < sibling->GetSize(); i++) {
-    leaf_page->SetKeyAt(curr_size + i, sibling->KeyAt(i));
-    leaf_page->SetValueAt(curr_size + i, sibling->ValueAt(i));
-}
-leaf_page->SetSize(curr_size + sibling->GetSize());
+**Internal Redistribute (different from leaf):**
+```
+Borrow from left internal sibling:
+  Before:  Parent: [..., K_sep, ...]
+           Left: [..., K_last, P_last]  Curr: [P0, K1, ...]
+  After:   Parent: [..., K_last, ...]
+           Left: [...]  Curr: [P_last, K_sep, P0, K1, ...]
+                              ↑ separator PULLED DOWN from parent
 
-// Copy donor's tombstones with adjusted indices
-auto donor_tombstones = sibling->GetIndexesInTombstones();
-for (auto tomb_idx : donor_tombstones) {
-    leaf_page->AddIndexToTombstones(curr_size + tomb_idx);
-}
+Borrow from right internal sibling:
+  Before:  Parent: [..., K_sep, ...]
+           Curr: [..., P_last]  Right: [P0, K1, ...]
+  After:   Parent: [..., K1, ...]
+           Curr: [..., P_last, K_sep, P0]  Right: [K2, ...]
+                              ↑ separator PULLED DOWN
+```
+
+**Internal Merge:**
+```
+Before:  Parent: [..., K_sep, ...]
+         Left: [...]  Right: [...]
+After:   Parent: [...] (K_sep removed, may cascade)
+         Left: [..., K_sep, ...right's entries...]
+                     ↑ separator PULLED DOWN into merged node
 ```
