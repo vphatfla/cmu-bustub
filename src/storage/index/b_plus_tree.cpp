@@ -160,9 +160,6 @@ auto BPLUSTREE_TYPE::Insert(const KeyType &key, const ValueType &value) -> bool 
   ctx.write_set_.pop_back();
 
   auto leaf_page = leaf_guard.AsMut<LeafPage>();
-  if (leaf_page->GetSize() == leaf_page->GetMaxSize()) {
-    leaf_page->CompactTombstones();
-  }
   if (leaf_page->GetSize() < leaf_page->GetMaxSize()) {
     return InsertKVToLeafPage(leaf_page, key, value);
   }
@@ -292,8 +289,8 @@ auto BPLUSTREE_TYPE::SplitLeafPage(LeafPage *old_page) -> std::tuple<KeyType, Wr
   auto new_leaf_page = new_leaf_guard.AsMut<LeafPage>();
   new_leaf_page->Init(leaf_max_size_);
 
-  auto old_page_size = old_page->GetSize();
-  int mid = std::ceil(static_cast<double>(old_page_size) / 2);
+  size_t old_page_size = old_page->GetSize();
+  size_t mid = std::ceil(static_cast<double>(old_page_size) / 2);
   auto pushed_up_key = old_page->KeyAt(mid);
 
   for (auto i = mid; i < old_page_size; i += 1) {
@@ -306,6 +303,17 @@ auto BPLUSTREE_TYPE::SplitLeafPage(LeafPage *old_page) -> std::tuple<KeyType, Wr
 
   new_leaf_page->SetNextPageId(old_page->GetNextPageId());
   old_page->SetNextPageId(new_leaf_page_id);
+
+  auto old_tombstones_indexes = old_page->GetIndexesInTombstones();
+  old_page->ClearTombstones();
+  for (const auto &i : old_tombstones_indexes) {
+    if (i < mid) {
+      old_page->AddIndexToTombstones(i);
+    } else {
+      new_leaf_page->AddIndexToTombstones(i - mid);
+    }
+  }
+
   return {pushed_up_key, std::move(new_leaf_guard), new_leaf_page_id};
 }
 
@@ -393,16 +401,92 @@ void BPLUSTREE_TYPE::Remove(const KeyType &key) {
     return;
   }
 
-  auto new_logical_size = leaf_page->GetSize() - leaf_page->GetTombstonesSize() - 1;
+  if (leaf_page->IsIndexInTombstones(pos.value())) {
+    // key already in tombstones, return
+    return;
+  }
 
-  // check for size here
-  // TODO:
+  auto new_logical_size = leaf_page->GetSize() - leaf_page->GetTombstonesSize() - 1;
+  auto min_required_size = leaf_page->GetMinSize();
+  if (new_logical_size >= min_required_size) {
+    if (!leaf_page->IsTombstonesFull()) {
+      // still have space, add the k-v to tombstone
+      leaf_page->AddIndexToTombstones(pos.value());
+      return;
+    }
+    leaf_page->DeleteOldestKeyInTombstones();
+    auto new_pos = FindIndexOfKeyInLeafPage(leaf_page, key);
+    leaf_page->AddIndexToTombstones(new_pos.value());
+    return;
+  }
+
+  // Adding the key to tombstone before redistribute/merge
+  if (!leaf_page->IsTombstonesFull()) {
+    leaf_page->AddIndexToTombstones(pos.value());
+  } else {
+    leaf_page->DeleteOldestKeyInTombstones();
+    auto new_pos = FindIndexOfKeyInLeafPage(leaf_page, key);
+    leaf_page->AddIndexToTombstones(new_pos.value());
+    // Continue to redistribute/merge (don't return early)
+  }
+
+  if (ctx.write_set_.empty()) {
+    // This is root page - can be underfilled
+    // Check if root is now empty (all entries are tombstones)
+    if (leaf_page->GetSize() == static_cast<int>(leaf_page->GetTombstonesSize())) {
+      // Root leaf is empty, set tree to empty
+      auto header_guard = std::move(ctx.header_page_.value());
+      auto header_page = header_guard.AsMut<BPlusTreeHeaderPage>();
+      header_page->root_page_id_ = INVALID_PAGE_ID;
+    }
+    return;
+  }
+
+  auto parent_guard = std::move(ctx.write_set_.back());
+  ctx.write_set_.pop_back();
+  auto parent_page = parent_guard.AsMut<InternalPage>();
+
+  auto child_index = parent_page->ValueIndex(leaf_guard.GetPageId());
+
+  // Try redistribute from left sibling
+  auto left_guard_opt = GetLeftSiblingLeafPage(parent_page, child_index);
+  if (left_guard_opt.has_value()) {
+    auto left_sibling_page = left_guard_opt.value().template AsMut<LeafPage>();
+    if (RedistributeLeafPageLeftSibling(leaf_page, left_sibling_page)) {
+      // Update parent separator key: parent key at child_index = first key of curr_page
+      parent_page->SetKeyAt(child_index, leaf_page->KeyAt(0));
+      return;
+    }
+  }
+
+  // Try redistribute from right sibling
+  auto right_guard_opt = GetRightSiblingLeafPage(parent_page, child_index);
+  if (right_guard_opt.has_value()) {
+    auto right_sibling_page = right_guard_opt.value().template AsMut<LeafPage>();
+    if (RedistributeLeafPageRightSibling(leaf_page, right_sibling_page)) {
+      // Update parent separator key: parent key at child_index+1 = first key of right sibling
+      parent_page->SetKeyAt(child_index + 1, right_sibling_page->KeyAt(0));
+      return;
+    }
+  }
+
+  // Neither sibling can spare - must merge
+  // Merge with left sibling if exists, otherwise merge with right
+  if (left_guard_opt.has_value()) {
+    auto left_sibling_page = left_guard_opt.value().template AsMut<LeafPage>();
+    MergeTwoLeafPages(left_sibling_page, leaf_page);
+    // TODO: Remove key at child_index from parent, handle cascading
+  } else if (right_guard_opt.has_value()) {
+    auto right_sibling_page = right_guard_opt.value().template AsMut<LeafPage>();
+    MergeTwoLeafPages(leaf_page, right_sibling_page);
+    // TODO: Remove key at child_index+1 from parent, handle cascading
+  }
 }
 
 FULL_INDEX_TEMPLATE_ARGUMENTS
 auto BPLUSTREE_TYPE::FindIndexOfKeyInLeafPage(LeafPage *page, const KeyType &key) const -> std::optional<size_t> {
   auto left = 0, right = page->GetSize() - 1;
-  while (left < right) {
+  while (left <= right) {
     auto mid = left + (right - left) / 2;
     auto cpm = comparator_(page->KeyAt(mid), key);
     if (cpm == 0) {
@@ -415,6 +499,149 @@ auto BPLUSTREE_TYPE::FindIndexOfKeyInLeafPage(LeafPage *page, const KeyType &key
   }
   return std::nullopt;
 }
+
+FULL_INDEX_TEMPLATE_ARGUMENTS
+auto BPLUSTREE_TYPE::GetLeftSiblingLeafPage(InternalPage *parent_page, const int child_index)
+    -> std::optional<WritePageGuard> {
+  if (child_index > 0) {
+    auto left_sibling_id = parent_page->ValueAt(child_index - 1);
+    WritePageGuard sibling_guard = bpm_->WritePage(left_sibling_id);
+    return std::move(sibling_guard);
+  }
+  return std::nullopt;
+}
+
+FULL_INDEX_TEMPLATE_ARGUMENTS
+auto BPLUSTREE_TYPE::GetRightSiblingLeafPage(InternalPage *parent_page, const int child_index)
+    -> std::optional<WritePageGuard> {
+  if (child_index < parent_page->GetSize() - 1) {
+    auto left_sibling_id = parent_page->ValueAt(child_index + 1);
+    WritePageGuard sibling_guard = bpm_->WritePage(left_sibling_id);
+    return std::move(sibling_guard);
+  }
+  return std::nullopt;
+}
+
+FULL_INDEX_TEMPLATE_ARGUMENTS
+auto BPLUSTREE_TYPE::RedistributeLeafPageLeftSibling(LeafPage *curr_page, LeafPage *sibling_page) -> bool {
+  auto sibling_logical_size = sibling_page->GetSize() - sibling_page->GetTombstonesSize();
+  auto sibling_min_required_size = sibling_page->GetMinSize();
+  if (sibling_logical_size <= sibling_min_required_size) {
+    return false;  // can't spare any k-v
+  }
+
+  auto curr_logical_size = curr_page->GetSize() - curr_page->GetTombstonesSize();
+  auto curr_min_required_size = curr_page->GetMinSize();
+  auto sibling_index = sibling_page->GetSize() - 1;
+  while (curr_logical_size < curr_min_required_size &&
+         (sibling_page->GetSize() - sibling_page->GetTombstonesSize()) > sibling_min_required_size) {
+    auto key = sibling_page->KeyAt(sibling_index);
+    auto value = sibling_page->ValueAt(sibling_index);
+    curr_page->ShiftKeyAndValueRight(0);
+    curr_page->SetKeyAt(0, key);
+    curr_page->SetValueAt(0, value);
+    curr_page->IncrementAllTombstonesIndexes();
+
+    curr_page->SetSize(curr_page->GetSize() + 1);
+    sibling_page->SetSize(sibling_page->GetSize() - 1);
+    if (sibling_page->IsIndexInTombstones(sibling_index)) {
+      if (curr_page->IsTombstonesFull()) {
+        curr_page->DeleteOldestKeyInTombstones();
+      }
+      curr_page->AddIndexToTombstones(0);  // getting key from left sibling
+      sibling_page->RemoveIndexFromTombstones(sibling_index);
+    }
+
+    curr_logical_size = curr_page->GetSize() - curr_page->GetTombstonesSize();
+    sibling_index -= 1;
+  }
+  // Return true only if curr_page reached min_size
+  return curr_logical_size >= curr_min_required_size;
+}
+
+FULL_INDEX_TEMPLATE_ARGUMENTS
+auto BPLUSTREE_TYPE::RedistributeLeafPageRightSibling(LeafPage *curr_page, LeafPage *sibling_page) -> bool {
+  auto sibling_logical_size = sibling_page->GetSize() - sibling_page->GetTombstonesSize();
+  auto sibling_min_required_size = sibling_page->GetMinSize();
+  if (sibling_logical_size <= sibling_min_required_size) {
+    return false;  // can't spare any k-v
+  }
+
+  auto curr_logical_size = curr_page->GetSize() - curr_page->GetTombstonesSize();
+  auto curr_min_required_size = curr_page->GetMinSize();
+  auto curr_index = curr_page->GetSize();
+  while (curr_logical_size < curr_min_required_size &&
+         (sibling_page->GetSize() - sibling_page->GetTombstonesSize()) > sibling_min_required_size) {
+    auto key = sibling_page->KeyAt(0);
+    auto value = sibling_page->ValueAt(0);
+    curr_page->SetKeyAt(curr_index, key);
+    curr_page->SetValueAt(curr_index, value);
+
+    sibling_page->ShiftKeyAndValueLeft(0);
+    if (sibling_page->IsIndexInTombstones(0)) {
+      if (curr_page->IsTombstonesFull()) {
+        curr_page->DeleteOldestKeyInTombstones();
+      }
+      curr_page->AddIndexToTombstones(curr_index);  // getting key from right sibling
+      sibling_page->RemoveIndexFromTombstones(0);
+    }
+
+    sibling_page->DecreaseAllTombstonesIndexes();
+    curr_page->SetSize(curr_page->GetSize() + 1);
+    sibling_page->SetSize(sibling_page->GetSize() - 1);
+    curr_logical_size = curr_page->GetSize() - curr_page->GetTombstonesSize();
+    curr_index += 1;
+  }
+  // Return true only if curr_page reached min_size
+  return curr_logical_size >= curr_min_required_size;
+}
+
+FULL_INDEX_TEMPLATE_ARGUMENTS
+void BPLUSTREE_TYPE::MergeTwoLeafPages(LeafPage *left_page, LeafPage *right_page) {
+  // Merge right_page into left_page
+  // Collect tombstoned KEYS from both pages (in FIFO order: left oldest first)
+  auto left_tomb_keys = left_page->GetTombstones();
+  auto right_tomb_keys = right_page->GetTombstones();
+
+  // Clear left's tombstones for fresh rebuild
+  left_page->ClearTombstones();
+
+  auto left_size = left_page->GetSize();
+  auto right_size = right_page->GetSize();
+
+  // Copy all entries from right_page to left_page
+  for (int i = 0; i < right_size; i++) {
+    left_page->SetKeyAt(left_size + i, right_page->KeyAt(i));
+    left_page->SetValueAt(left_size + i, right_page->ValueAt(i));
+  }
+  left_page->SetSize(left_size + right_size);
+
+  // Rebuild tombstones: add left's first (older), then right's (newer)
+  // When evicting, DeleteOldestKeyInTombstones adjusts remaining indices automatically
+  for (const auto &key : left_tomb_keys) {
+    if (left_page->IsTombstonesFull()) {
+      left_page->DeleteOldestKeyInTombstones();
+    }
+    auto idx = FindIndexOfKeyInLeafPage(left_page, key);
+    if (idx.has_value()) {
+      left_page->AddIndexToTombstones(idx.value());
+    }
+  }
+
+  for (const auto &key : right_tomb_keys) {
+    if (left_page->IsTombstonesFull()) {
+      left_page->DeleteOldestKeyInTombstones();
+    }
+    auto idx = FindIndexOfKeyInLeafPage(left_page, key);
+    if (idx.has_value()) {
+      left_page->AddIndexToTombstones(idx.value());
+    }
+  }
+
+  // Update sibling pointer
+  left_page->SetNextPageId(right_page->GetNextPageId());
+}
+
 /*****************************************************************************
  * INDEX ITERATOR
  *****************************************************************************/

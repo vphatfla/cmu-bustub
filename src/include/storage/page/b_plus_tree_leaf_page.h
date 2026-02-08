@@ -89,14 +89,32 @@ class BPlusTreeLeafPage : public BPlusTreePage {
   /// @biref Shift the key and value to the left 1 unit, used in deletion of the key at index
   void ShiftKeyAndValueLeft(const size_t index);
 
-  /// @brief Try to remove all the tombstone key-value
-  void CompactTombstones();
-
   /// @brief Return whether the leaf's tombstone is full
   auto IsTombstonesFull() const -> bool;
 
   /// @brief Return the size of this leaf page tombstone
   auto GetTombstonesSize() const -> size_t;
+
+  /// @brief Add index to tombstone, increase the tombstone size
+  void AddIndexToTombstones(const size_t index);
+
+  /// @brief Return the min required size of the leaf page at all time
+  auto GetMinSize() const -> size_t;
+
+  /// @brief Return all indexes in tombstones
+  auto GetIndexesInTombstones() const -> std::vector<size_t>;
+
+  /// @brief Delete the oldest key in tombstones
+  void DeleteOldestKeyInTombstones();
+
+  /// @brief Clear tombstone, reset num_tombstones_ to 0
+  void ClearTombstones();
+
+  /// @brief Increase all tombstones index by 1
+  void IncrementAllTombstonesIndexes();
+
+  /// @brief Decrease all tombstones index by 1
+  void DecreaseAllTombstonesIndexes();
   /**
    * @brief for test only return a string representing all keys in
    * this leaf page formatted as "(tombkey1, tombkey2, ...|key1,key2,key3,...)"

@@ -171,6 +171,18 @@ class BPlusTree {
   /// @return the pair <WritePageGuard, page_id> of the new root page
   [[nodiscard]] auto CreateNewRootAndUpdateHeader(Context &ctx) -> std::pair<WritePageGuard, page_id_t>;
 
+  /// @brief Get the sibling write guard of the given leaf page
+  auto GetLeftSiblingLeafPage(InternalPage *parent_page, const int child_index) -> std::optional<WritePageGuard>;
+  auto GetRightSiblingLeafPage(InternalPage *parent_page, const int child_index) -> std::optional<WritePageGuard>;
+
+  /// @brief Redistributed the sibling with the current leaf page
+  /// @return return false if failed to redistribute, else true
+  auto RedistributeLeafPageLeftSibling(LeafPage *curr_page, LeafPage *sibling_page) -> bool;
+
+  auto RedistributeLeafPageRightSibling(LeafPage *curr_page, LeafPage *sibling_page) -> bool;
+
+  /// @brief Merge two pages
+  void MergeTwoLeafPages(LeafPage *curr_page, LeafPage *sibling_page);
   /// @brief Given a key, traverse all the way to the leaf node that contains the key
   /// @note Caller must push root guard onto guard_set before calling. For Insert, caller handles header page
   /// separately.

@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <functional>
 #include <sstream>
@@ -137,32 +138,67 @@ void B_PLUS_TREE_LEAF_PAGE_TYPE::ShiftKeyAndValueLeft(const size_t index) {
 }
 
 FULL_INDEX_TEMPLATE_ARGUMENTS
-void B_PLUS_TREE_LEAF_PAGE_TYPE::CompactTombstones() {
-  if (num_tombstones_ == 0) {
-    return;
-  }
-  auto tombstones_vector = std::vector<size_t>{};
-  for (size_t i = 0; i < num_tombstones_; i += 1) {
-    tombstones_vector.emplace_back(tombstones_[i]);
-  }
-  // sort decesding
-  std::sort(tombstones_vector.begin(), tombstones_vector.end(), std::greater<size_t>());
-
-  for (const auto index : tombstones_vector) {
-    ShiftKeyAndValueLeft(index);
-    SetSize(GetSize() - 1);
-  }
-
-  // reset the tombstones
-  num_tombstones_ = 0;
-}
-
-FULL_INDEX_TEMPLATE_ARGUMENTS
 auto B_PLUS_TREE_LEAF_PAGE_TYPE::IsTombstonesFull() const -> bool { return num_tombstones_ >= LEAF_PAGE_TOMB_CNT; }
 
 FULL_INDEX_TEMPLATE_ARGUMENTS
 auto B_PLUS_TREE_LEAF_PAGE_TYPE::GetTombstonesSize() const -> size_t { return num_tombstones_; }
 
+FULL_INDEX_TEMPLATE_ARGUMENTS
+void B_PLUS_TREE_LEAF_PAGE_TYPE::AddIndexToTombstones(const size_t index) {
+  tombstones_[num_tombstones_] = index;
+  num_tombstones_ += 1;
+}
+
+FULL_INDEX_TEMPLATE_ARGUMENTS
+auto B_PLUS_TREE_LEAF_PAGE_TYPE::GetMinSize() const -> size_t {
+  return std::ceil(static_cast<double>(GetMaxSize()) / 2);
+}
+
+FULL_INDEX_TEMPLATE_ARGUMENTS
+auto B_PLUS_TREE_LEAF_PAGE_TYPE::GetIndexesInTombstones() const -> std::vector<size_t> {
+  auto res = std::vector<size_t>{};
+  for (size_t i = 0; i < num_tombstones_; i += 1) {
+    res.emplace_back(tombstones_[i]);
+  }
+  return res;
+}
+
+FULL_INDEX_TEMPLATE_ARGUMENTS
+void B_PLUS_TREE_LEAF_PAGE_TYPE::DeleteOldestKeyInTombstones() {
+  auto pos = tombstones_[0];
+  auto size = static_cast<size_t>(GetSize());
+  // shift the main arrays
+  for (size_t i = pos; i < size - 1; i += 1) {
+    key_array_[i] = key_array_[i + 1];
+    rid_array_[i] = rid_array_[i + 1];
+  }
+  SetSize(size - 1);
+  // shift the tombstone
+  for (size_t i = 0; i < num_tombstones_ - 1; i += 1) {
+    tombstones_[i] = tombstones_[i + 1];
+    if (tombstones_[i] > pos) {
+      tombstones_[i] -= 1;
+    }
+  }
+  num_tombstones_ -= 1;
+}
+
+FULL_INDEX_TEMPLATE_ARGUMENTS
+void B_PLUS_TREE_LEAF_PAGE_TYPE::ClearTombstones() { num_tombstones_ = 0; }
+
+FULL_INDEX_TEMPLATE_ARGUMENTS
+void B_PLUS_TREE_LEAF_PAGE_TYPE::IncrementAllTombstonesIndexes() {
+  for (size_t i = 0; i < num_tombstones_; i += 1) {
+    tombstones_[i] += 1;
+  }
+}
+
+FULL_INDEX_TEMPLATE_ARGUMENTS
+void B_PLUS_TREE_LEAF_PAGE_TYPE::DecreaseAllTombstonesIndexes() {
+  for (size_t i = 0; i < num_tombstones_; i += 1) {
+    tombstones_[i] -= 1;
+  }
+}
 template class BPlusTreeLeafPage<GenericKey<4>, RID, GenericComparator<4>>;
 
 template class BPlusTreeLeafPage<GenericKey<8>, RID, GenericComparator<8>>;
