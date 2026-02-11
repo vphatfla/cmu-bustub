@@ -10,6 +10,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include <cmath>
 #include <cstddef>
 #include <iostream>
 #include <sstream>
@@ -98,6 +99,23 @@ void B_PLUS_TREE_INTERNAL_PAGE_TYPE::ShiftKeyAndValueRight(const size_t index) {
     page_id_array_[i] = page_id_array_[i - 1];
   }
 }
+
+INDEX_TEMPLATE_ARGUMENTS
+void B_PLUS_TREE_INTERNAL_PAGE_TYPE::ShiftKeyAndValueLeft(const size_t index) {
+  BUSTUB_ENSURE(static_cast<int>(index) < GetSize(), "Index must be smaller than the current size");
+  BUSTUB_ENSURE(GetSize() > 0, "Cannot shift left on empty page");
+  // Shift elements [index+1, size-1] to [index, size-2]
+  for (auto i = static_cast<int>(index); i < GetSize() - 1; i += 1) {
+    key_array_[i] = key_array_[i + 1];
+    page_id_array_[i] = page_id_array_[i + 1];
+  }
+}
+
+INDEX_TEMPLATE_ARGUMENTS
+auto B_PLUS_TREE_INTERNAL_PAGE_TYPE::GetMinSize() const -> int {
+  return static_cast<int>(std::ceil(static_cast<double>(GetMaxSize()) / 2));
+}
+
 // valuetype for internalNode should be page id_t
 template class BPlusTreeInternalPage<GenericKey<4>, page_id_t, GenericComparator<4>>;
 template class BPlusTreeInternalPage<GenericKey<8>, page_id_t, GenericComparator<8>>;

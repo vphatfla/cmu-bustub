@@ -171,9 +171,9 @@ class BPlusTree {
   /// @return the pair <WritePageGuard, page_id> of the new root page
   [[nodiscard]] auto CreateNewRootAndUpdateHeader(Context &ctx) -> std::pair<WritePageGuard, page_id_t>;
 
-  /// @brief Get the sibling write guard of the given leaf page
-  auto GetLeftSiblingLeafPage(InternalPage *parent_page, const int child_index) -> std::optional<WritePageGuard>;
-  auto GetRightSiblingLeafPage(InternalPage *parent_page, const int child_index) -> std::optional<WritePageGuard>;
+  /// @brief Get the sibling write guard of the given child page (works for both leaf and internal)
+  auto GetLeftSiblingPage(InternalPage *parent_page, int child_index) -> std::optional<WritePageGuard>;
+  auto GetRightSiblingPage(InternalPage *parent_page, int child_index) -> std::optional<WritePageGuard>;
 
   /// @brief Redistributed the sibling with the current leaf page
   /// @return return false if failed to redistribute, else true
@@ -181,8 +181,8 @@ class BPlusTree {
 
   auto RedistributeLeafPageRightSibling(LeafPage *curr_page, LeafPage *sibling_page) -> bool;
 
-  /// @brief Merge two pages
-  void MergeTwoLeafPages(LeafPage *curr_page, LeafPage *sibling_page);
+  /// @brief Merge src_page INTO dest_page (src_page entries are copied to dest_page)
+  void MergeTwoLeafPages(LeafPage *dest_page, LeafPage *src_page);
   /// @brief Given a key, traverse all the way to the leaf node that contains the key
   /// @note Caller must push root guard onto guard_set before calling. For Insert, caller handles header page
   /// separately.
@@ -222,6 +222,12 @@ class BPlusTree {
       }
     }
   }
+
+  /// @brief Handle remove the Key and Value pair in InternalPage
+  /// This is used during the merging of sibling children
+  /// @param page: parent InternalPage pointer
+  /// @param child_index: the index of the left sibling that we're preserve
+  void RemoveKeyValueInInternalPage(Context &ctx, WritePageGuard guard, size_t child_index);
 };
 
 /**

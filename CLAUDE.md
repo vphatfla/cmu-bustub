@@ -361,11 +361,11 @@ auto CreateNewRootAndUpdateHeader(Context& ctx) -> std::pair<WritePageGuard, pag
 
 // Remove helpers - ✅ LEAF LEVEL DONE
 auto FindIndexOfKeyInLeafPage(LeafPage* page, const KeyType& key) const -> std::optional<size_t>;
-auto GetLeftSiblingLeafPage(InternalPage* parent, int child_index) -> std::optional<WritePageGuard>;
-auto GetRightSiblingLeafPage(InternalPage* parent, int child_index) -> std::optional<WritePageGuard>;
+auto GetLeftSiblingPage(InternalPage* parent, int child_index) -> std::optional<WritePageGuard>;
+auto GetRightSiblingPage(InternalPage* parent, int child_index) -> std::optional<WritePageGuard>;
 auto RedistributeLeafPageLeftSibling(LeafPage* curr, LeafPage* sibling) -> bool;
 auto RedistributeLeafPageRightSibling(LeafPage* curr, LeafPage* sibling) -> bool;
-void MergeTwoLeafPages(LeafPage* left_page, LeafPage* right_page);
+void MergeTwoLeafPages(LeafPage* dest_page, LeafPage* src_page);
 
 // TODO: Internal page remove helpers (for cascading deletes)
 // void RemoveKeyFromInternalPage(InternalPage* page, int key_index);
@@ -632,11 +632,39 @@ Remove(key):
 
 7. If new_logical_size < min_size:
    - Add key to tombstone first
-   - If root page (write_set empty) → can be underfull, check if completely empty
+   - If root page (write_set empty) → can be underfull, just return
    - Try redistribute from left sibling → update parent separator key
    - Try redistribute from right sibling → update parent separator key
    - If neither works → merge with sibling
    - TODO: Cascade delete to parent after merge
+```
+
+**Root Leaf Page Handling (Session 2026-02-10):**
+Per spec, tombstones should only be physically applied when buffer is full. When the root leaf page has all entries tombstoned (`size == num_tombstones`), we do NOT set tree to empty. Instead:
+- Root pages can be underfull - standard B+ tree rule
+- Keep tombstones as per spec (they're maintained, not discarded)
+- Future inserts will reuse tombstoned slots
+- Future deletes that fill buffer will trigger natural eviction
+
+```cpp
+if (ctx.write_set_.empty()) {
+    // This is root page - can be underfull
+    // Don't check for "logically empty" - just return and keep tombstones
+    return;
+}
+```
+
+**Edge case:** If `NumTombs = 0` (no tombstone buffer), deletions are immediate physical removal and `size` could reach 0. Only then should we consider setting tree to empty:
+```cpp
+if (ctx.write_set_.empty()) {
+    if (leaf_page->GetSize() == 0) {
+        // Truly empty (only possible when NumTombs = 0)
+        auto header_guard = std::move(ctx.header_page_.value());
+        auto header_page = header_guard.AsMut<BPlusTreeHeaderPage>();
+        header_page->root_page_id_ = INVALID_PAGE_ID;
+    }
+    return;
+}
 ```
 
 **Redistribute Functions - ✅ IMPLEMENTED with defensive guards:**
@@ -663,16 +691,17 @@ RedistributeLeafPageRightSibling(curr_page, sibling_page):
 
 **MergeTwoLeafPages - ✅ IMPLEMENTED with key-based tombstone rebuild:**
 ```cpp
-MergeTwoLeafPages(left_page, right_page):
+MergeTwoLeafPages(dest_page, src_page):
+  // src_page is merged INTO dest_page (src_page will be deleted by caller)
   1. Collect tombstoned KEYS from both pages (not indices)
-  2. Clear left's tombstones for fresh rebuild
-  3. Copy all entries from right to left
+  2. Clear dest's tombstones for fresh rebuild
+  3. Copy all entries from src to dest
   4. Set combined size
   5. Rebuild tombstones by finding each key's current index:
-     - Add left's tombstones first (older, FIFO order)
-     - Add right's tombstones (newer)
+     - Add dest's tombstones first (older, FIFO order)
+     - Add src's tombstones (newer)
      - Evict if full → DeleteOldestKeyInTombstones adjusts indices
-  6. Update sibling pointer (left.next = right.next)
+  6. Update sibling pointer (dest.next = src.next)
 ```
 **Why key-based:** Avoids complex index offset tracking when evictions shift the array.
 
@@ -793,31 +822,32 @@ for (const auto &i : old_tombstones_indexes) {
 }
 ```
 
-### MergeTwoLeafPages - Key-Based Approach (b_plus_tree.cpp:599-638):
+### MergeTwoLeafPages - Key-Based Approach (b_plus_tree.cpp:599-642):
 ```cpp
+// src_page is merged INTO dest_page
 // Collect tombstoned KEYS (not indices) from both pages
-auto left_tomb_keys = left_page->GetTombstones();
-auto right_tomb_keys = right_page->GetTombstones();
-left_page->ClearTombstones();
+auto dest_tomb_keys = dest_page->GetTombstones();
+auto src_tomb_keys = src_page->GetTombstones();
+dest_page->ClearTombstones();
 
-// Copy all entries from right to left
-for (int i = 0; i < right_size; i++) {
-  left_page->SetKeyAt(left_size + i, right_page->KeyAt(i));
-  left_page->SetValueAt(left_size + i, right_page->ValueAt(i));
+// Copy all entries from src to dest
+for (int i = 0; i < src_size; i++) {
+  dest_page->SetKeyAt(dest_size + i, src_page->KeyAt(i));
+  dest_page->SetValueAt(dest_size + i, src_page->ValueAt(i));
 }
-left_page->SetSize(left_size + right_size);
+dest_page->SetSize(dest_size + src_size);
 
 // Rebuild tombstones by finding each key's current index
-for (const auto &key : left_tomb_keys) {
-  if (left_page->IsTombstonesFull()) {
-    left_page->DeleteOldestKeyInTombstones();
+for (const auto &key : dest_tomb_keys) {
+  if (dest_page->IsTombstonesFull()) {
+    dest_page->DeleteOldestKeyInTombstones();
   }
-  auto idx = FindIndexOfKeyInLeafPage(left_page, key);
+  auto idx = FindIndexOfKeyInLeafPage(dest_page, key);
   if (idx.has_value()) {
-    left_page->AddIndexToTombstones(idx.value());
+    dest_page->AddIndexToTombstones(idx.value());
   }
 }
-// Same for right_tomb_keys...
+// Same for src_tomb_keys...
 ```
 **Why key-based:** When evictions happen, they shift the array. Finding keys by value avoids tracking index offsets.
 

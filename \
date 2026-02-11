@@ -640,38 +640,27 @@ void BPLUSTREE_TYPE::MergeTwoLeafPages(LeafPage *dest_page, LeafPage *src_page) 
 }
 
 FULL_INDEX_TEMPLATE_ARGUMENTS
-void BPLUSTREE_TYPE::RemoveKeyValueInInternalPage(Context &ctx, WritePageGuard guard, size_t child_index) {
-  auto page = guard.AsMut<InternalPage>();
-  page->ShiftKeyAndValueRight(child_index + 1);
-  page->SetSize(page->GetSize() - 1);
+void BPLUSTREE_TYPE::RemoveKeyValueInInternalPage(Context& ctx, WritePageGuard guard, size_t child_index) {
+    auto page = guard.AsMut<InternalPage>();
+    page->ShiftKeyAndValueRight(child_index+1);
+    page->SetSize(page->GetSize()-1);
 
-  if (page->GetSize() >= page->GetMinSize()) {
-    return;
-  }
+    if (page->GetSize() >= page->GetMinSize()) {
+        return;
+    }
 
-  if (ctx.IsRootPage(guard.GetPageId())) {
-    return;
-  }
+    if (ctx.IsRootPage(guard.GetPageId())) {
+        return;
+    }
 
-  // get the parent of this page
-  WritePageGuard parent_guard = std::move(ctx.write_set_.back());
-  ctx.write_set_.pop_back();
-  auto parent_page = parent_guard.AsMut<InternalPage>();
-  auto curr_child_index = parent_page->ValueIndex(guard.GetPageId());
-  // current page is underfilled, need to fetch the left and right sibling for redistribute or merging
-  // try left
-  auto left_sibling_guard = GetLeftSiblingPage(parent_page, curr_child_index);
-  if (left_sibling_guard.has_value()) {
-    // todo: redistribute
-  }
-  // try right
-  auto right_sibling_guard = GetRightSiblingPage(parent_page, curr_child_index);
-  if (right_sibling_guard.has_value()) {
-    // TODO
-  }
-
-  // TODO
-  // try merging
+    // get the parent of this page
+    WritePageGuard parent_guard = std::move(ctx.write_set_.back());
+    ctx.write_set_.pop_back();
+    auto parent_page = parent_guard.AsMut<InternalPage>();
+    auto curr_child_index = parent_page->ValueIndex(guard.GetPageId());
+    // current page is underfilled, need to fetch the left and right sibling for redistribute or merging
+    // try left
+    auto left_sibling_guard = GetLeftSiblingPage(parent_page, curr_child_index);
 }
 /*****************************************************************************
  * INDEX ITERATOR
