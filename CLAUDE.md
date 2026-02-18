@@ -367,11 +367,11 @@ auto RedistributeLeafPageLeftSibling(LeafPage* curr, LeafPage* sibling) -> bool;
 auto RedistributeLeafPageRightSibling(LeafPage* curr, LeafPage* sibling) -> bool;
 void MergeTwoLeafPages(LeafPage* dest_page, LeafPage* src_page);
 
-// TODO: Internal page remove helpers (for cascading deletes)
-// void RemoveKeyFromInternalPage(InternalPage* page, int key_index);
-// auto RedistributeInternalPageLeftSibling(...) -> bool;
-// auto RedistributeInternalPageRightSibling(...) -> bool;
-// void MergeTwoInternalPages(...);
+// Internal page remove helpers
+void RemoveKeyValueInInternalPage(Context& ctx, WritePageGuard guard, size_t child_index);
+auto RedistributeInternalPageLeftSibling(InternalPage* curr, InternalPage* sibling, InternalPage* parent, int curr_child_index) -> bool;  // ✅ DONE
+auto RedistributeInternalPageRightSibling(InternalPage* curr, InternalPage* sibling, InternalPage* parent, int curr_child_index) -> bool;  // ✅ DONE
+// TODO: void MergeTwoInternalPages(...);
 
 // Template function for traversal (in header file)
 template <typename GuardType>

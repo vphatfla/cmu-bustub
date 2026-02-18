@@ -675,24 +675,54 @@ void BPLUSTREE_TYPE::RemoveKeyValueInInternalPage(Context &ctx, WritePageGuard g
 }
 
 FULL_INDEX_TEMPLATE_ARGUMENTS
-auto BPLUSTREE_TYPE::RedistributeInternalPageLeftSibling(InternalPage* curr_page, InternalPage* sibling_page, InternalPage* parent_page, const int curr_child_index) -> bool {
-    if (sibling_page->GetSize() == sibling_page->GetMinSize()) {
-        // nothing to spare
-        return false;
-    }
-    // [x,1,3,4,5] with p0,p1,p2,p3,p4
-    // [x,7,.,.,.] with p0,p1 ( size <= 3)
-    // [x,1,3,4,.] with p0,p1,p2,p3
-    // [x,5,7,.,.] with
+auto BPLUSTREE_TYPE::RedistributeInternalPageLeftSibling(InternalPage *curr_page, InternalPage *sibling_page,
+                                                         InternalPage *parent_page, const int curr_child_index)
+    -> bool {
+  if (sibling_page->GetSize() <= sibling_page->GetMinSize()) {
+    return false;
+  }
 
-    // shift right in the current page
-    curr_page->ShiftKeyAndValueRight(1);
-    // should only spare one VALUE for the left
-    auto n = sibling_page->GetSize();
-    curr_page->SetKeyAt(1, sibling_page->KeyAt(n-1));
-    curr_page->SetValueAt(0, )
+  auto n = sibling_page->GetSize();
+  // shift right in the current page
+  curr_page->ShiftKeyAndValueRight(1);
+  // pull the key from parent page
+  curr_page->SetKeyAt(1, parent_page->KeyAt(curr_child_index));
+  // borrow the pointer from sibiling
+  curr_page->SetValueAt(0, sibling_page->ValueAt(n - 1));
+  // push the key up from sibling page
+  parent_page->SetKeyAt(curr_child_index, sibling_page->KeyAt(n - 1));
 
-    return true;
+  // decrease k-v count from sibling page, shoudn't have to physicially delete
+  sibling_page->SetSize(n - 1);
+  // increase curr page size
+  curr_page->SetSize(curr_page->GetSize() + 1);
+  return true;
+}
+
+FULL_INDEX_TEMPLATE_ARGUMENTS
+auto BPLUSTREE_TYPE::RedistributeInternalPageRightSibling(InternalPage *curr_page, InternalPage *sibling_page,
+                                                          InternalPage *parent_page, const int curr_child_index)
+    -> bool {
+  if (sibling_page->GetSize() <= sibling_page->GetMinSize()) {
+    return false;
+  }
+
+  auto n = curr_page->GetSize();
+  // pull down the key from parent to curr_page
+  curr_page->SetKeyAt(n, parent_page->KeyAt(curr_child_index + 1));
+  // push up the left most key from the sibiling
+  parent_page->SetKeyAt(curr_child_index + 1, sibling_page->KeyAt(1));
+  // curr_page to borrow the left-most pointer
+  curr_page->SetValueAt(n, sibling_page->ValueAt(0));
+
+  // shift key and value in sibiling page after lending the left most key
+  sibling_page->SetValueAt(0, sibling_page->ValueAt(1));
+  sibling_page->ShiftKeyAndValueLeft(1);
+
+  // adjust size
+  sibling_page->SetSize(sibling_page->GetSize() - 1);
+  curr_page->SetSize(n + 1);
+  return true;
 }
 /*****************************************************************************
  * INDEX ITERATOR
