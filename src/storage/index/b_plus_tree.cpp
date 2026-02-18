@@ -673,6 +673,27 @@ void BPLUSTREE_TYPE::RemoveKeyValueInInternalPage(Context &ctx, WritePageGuard g
   // TODO
   // try merging
 }
+
+FULL_INDEX_TEMPLATE_ARGUMENTS
+auto BPLUSTREE_TYPE::RedistributeInternalPageLeftSibling(InternalPage* curr_page, InternalPage* sibling_page, InternalPage* parent_page, const int curr_child_index) -> bool {
+    if (sibling_page->GetSize() == sibling_page->GetMinSize()) {
+        // nothing to spare
+        return false;
+    }
+    // [x,1,3,4,5] with p0,p1,p2,p3,p4
+    // [x,7,.,.,.] with p0,p1 ( size <= 3)
+    // [x,1,3,4,.] with p0,p1,p2,p3
+    // [x,5,7,.,.] with
+
+    // shift right in the current page
+    curr_page->ShiftKeyAndValueRight(1);
+    // should only spare one VALUE for the left
+    auto n = sibling_page->GetSize();
+    curr_page->SetKeyAt(1, sibling_page->KeyAt(n-1));
+    curr_page->SetValueAt(0, )
+
+    return true;
+}
 /*****************************************************************************
  * INDEX ITERATOR
  *****************************************************************************/

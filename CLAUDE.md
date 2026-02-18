@@ -911,22 +911,83 @@ RemoveKeyFromInternalPage(parent, key_index, ctx):
    - Recursively RemoveKeyFromInternalPage on grandparent
 ```
 
-**Internal Redistribute (different from leaf):**
+**Internal Page Layout Reminder:**
 ```
-Borrow from left internal sibling:
-  Before:  Parent: [..., K_sep, ...]
-           Left: [..., K_last, P_last]  Curr: [P0, K1, ...]
-  After:   Parent: [..., K_last, ...]
-           Left: [...]  Curr: [P_last, K_sep, P0, K1, ...]
-                              ↑ separator PULLED DOWN from parent
+key_array:     [ _ ] [K1] [K2] [K3]      (key[0] is INVALID)
+page_id_array: [P0]  [P1] [P2] [P3]
+                 │     │    │    │
+              children with keys:
+              <K1  <K2  <K3  >=K3
+```
 
-Borrow from right internal sibling:
-  Before:  Parent: [..., K_sep, ...]
-           Curr: [..., P_last]  Right: [P0, K1, ...]
-  After:   Parent: [..., K1, ...]
-           Curr: [..., P_last, K_sep, P0]  Right: [K2, ...]
-                              ↑ separator PULLED DOWN
+**Internal Redistribute — Borrow from LEFT sibling:**
+
+Keys rotate through parent (sibling → parent → current), NOT directly between siblings.
+This preserves the routing invariant since internal keys are separators, not data.
+
 ```
+BEFORE:
+              Parent
+  keys:  [ _ ] [20] [50] [80]
+  ptrs:  [L]   [C]  ...  ...
+          │     │
+          ▼     ▼
+        Left          Current (underfull)
+  [ _ ][5][10][15]     [ _ ][55]
+  [A] [B] [C] [D]     [E]  [F]
+
+Step 1: Pull separator (20) DOWN from parent → Current's new first key
+Step 2: Move Left's rightmost pointer (D) → Current's position 0
+Step 3: Push Left's rightmost key (15) UP to parent as new separator
+
+AFTER:
+              Parent
+  keys:  [ _ ] [15] [50] [80]     ← 15 replaced 20
+  ptrs:  [L]   [C]  ...  ...
+
+        Left                 Current
+  [ _ ] [5] [10]        [ _ ] [20] [55]
+  [A]  [B]  [C]         [D]   [E]  [F]
+
+Invariant check: Left keys < 15 ✓ | Current keys >= 15 ✓
+Pointer D (keys 15..19) now routed under key 20 in Current ✓
+```
+
+**Internal Redistribute — Borrow from RIGHT sibling:**
+```
+BEFORE:
+              Parent
+  keys:  [ _ ] [20] [50] [80]
+  ptrs:  ...   [C]  [R]  ...
+                │    │
+                ▼    ▼
+          Current          Right
+      (underfull)
+       [ _ ][30]       [ _ ][60][70][75]
+       [A]  [B]        [E]  [F] [G] [H]
+
+Step 1: Pull separator (50) DOWN from parent → append to Current as last key
+Step 2: Move Right's leftmost pointer (E) → Current's new last position
+Step 3: Push Right's first valid key (60) UP to parent as new separator
+        Right shifts its entries left to remove key 60 and pointer E
+
+AFTER:
+              Parent
+  keys:  [ _ ] [20] [60] [80]     ← 60 replaced 50
+  ptrs:  ...   [C]  [R]  ...
+
+        Current                Right
+  [ _ ] [30] [50]         [ _ ] [70] [75]
+  [A]   [B]  [E]          [F]   [G]  [H]
+
+Invariant check: Current keys < 60 ✓ | Right keys >= 60 ✓
+Pointer E (keys 50..59) correctly under key 50 in Current ✓
+```
+
+**Why rotation through parent (not direct move)?**
+Internal keys are routing guides, not data. The parent separator defines the boundary
+between two children. Moving a key directly would break the routing invariant.
+The 3-way rotation (sibling → parent → current) keeps all boundaries consistent.
 
 **Internal Merge:**
 ```

@@ -179,7 +179,23 @@ class BPlusTree {
   /// @return return false if failed to redistribute, else true
   auto RedistributeLeafPageLeftSibling(LeafPage *curr_page, LeafPage *sibling_page) -> bool;
 
+  /// @brief Redistributed the sibling with the current leaf page
+  /// @return return false if failed to redistribute, else true
   auto RedistributeLeafPageRightSibling(LeafPage *curr_page, LeafPage *sibling_page) -> bool;
+
+  /// @brief Redistribute the sibiling the the current internal page
+  /// @param curr_page: page that is borrowing key and pointer
+  /// @param sibling_page: page that is lending out key and pointer
+  /// @param parent_page: parent of both curr_page and sibling_page
+  /// @param curr_child_index: is the index of curr_page in key_array of parent_page
+  auto RedistributeInternalPageLeftSibling(InternalPage* curr_page, InternalPage* sibling_page, InternalPage* parent_page, const int curr_child_index) -> bool;
+  
+  /// @brief Redistribute the sibiling the the current internal page
+  /// @param curr_page: page that is borrowing key and pointer
+  /// @param sibling_page: page that is lending out key and pointer
+  /// @param parent_page: parent of both curr_page and sibling_page
+  /// @param curr_child_index: is the index of curr_page in key_array of parent_page
+  auto RedistributeInternalPageRightSibling(InternalPage* curr_page, InternalPage* sibling_page, InternalPage* parent_page, const int curr_child_index) -> bool;
 
   /// @brief Merge src_page INTO dest_page (src_page entries are copied to dest_page)
   void MergeTwoLeafPages(LeafPage *dest_page, LeafPage *src_page);
