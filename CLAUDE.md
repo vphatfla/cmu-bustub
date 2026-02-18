@@ -920,7 +920,7 @@ page_id_array: [P0]  [P1] [P2] [P3]
               <K1  <K2  <K3  >=K3
 ```
 
-**Internal Redistribute — Borrow from LEFT sibling:**
+**Internal Redistribute — Borrow from LEFT sibling: ✅ IMPLEMENTED**
 
 Keys rotate through parent (sibling → parent → current), NOT directly between siblings.
 This preserves the routing invariant since internal keys are separators, not data.
@@ -936,9 +936,11 @@ BEFORE:
   [ _ ][5][10][15]     [ _ ][55]
   [A] [B] [C] [D]     [E]  [F]
 
-Step 1: Pull separator (20) DOWN from parent → Current's new first key
-Step 2: Move Left's rightmost pointer (D) → Current's position 0
-Step 3: Push Left's rightmost key (15) UP to parent as new separator
+Step 1: ShiftKeyAndValueRight(1) on curr     → make room
+Step 2: curr.SetKeyAt(1, parent[ci])         → pull separator (20) DOWN
+Step 3: curr.SetValueAt(0, sib[n-1])         → borrow rightmost ptr (D)
+Step 4: parent.SetKeyAt(ci, sib.KeyAt(n-1))  → push key (15) UP
+Step 5: sibling.SetSize(n-1), curr.SetSize(curr+1)
 
 AFTER:
               Parent
@@ -953,7 +955,7 @@ Invariant check: Left keys < 15 ✓ | Current keys >= 15 ✓
 Pointer D (keys 15..19) now routed under key 20 in Current ✓
 ```
 
-**Internal Redistribute — Borrow from RIGHT sibling:**
+**Internal Redistribute — Borrow from RIGHT sibling: ✅ IMPLEMENTED**
 ```
 BEFORE:
               Parent
@@ -966,10 +968,12 @@ BEFORE:
        [ _ ][30]       [ _ ][60][70][75]
        [A]  [B]        [E]  [F] [G] [H]
 
-Step 1: Pull separator (50) DOWN from parent → append to Current as last key
-Step 2: Move Right's leftmost pointer (E) → Current's new last position
-Step 3: Push Right's first valid key (60) UP to parent as new separator
-        Right shifts its entries left to remove key 60 and pointer E
+Step 1: curr.SetKeyAt(n, parent[ci+1])           → pull separator (50) DOWN
+Step 2: parent.SetKeyAt(ci+1, sib.KeyAt(1))      → push key (60) UP
+Step 3: curr.SetValueAt(n, sib.ValueAt(0))        → borrow leftmost ptr (E)
+Step 4: sib.SetValueAt(0, sib.ValueAt(1))         → promote next ptr (F) to pos 0
+Step 5: sib.ShiftKeyAndValueLeft(1)                → remove key[1] and shift rest left
+Step 6: sibling.SetSize(-1), curr.SetSize(+1)
 
 AFTER:
               Parent
@@ -988,6 +992,11 @@ Pointer E (keys 50..59) correctly under key 50 in Current ✓
 Internal keys are routing guides, not data. The parent separator defines the boundary
 between two children. Moving a key directly would break the routing invariant.
 The 3-way rotation (sibling → parent → current) keeps all boundaries consistent.
+
+**Right sibling gotcha:** After borrowing value[0] and key[1] from sibling,
+must `SetValueAt(0, ValueAt(1))` BEFORE `ShiftKeyAndValueLeft(1)` because
+the shift doesn't touch value[0]. ShiftKeyAndValueLeft(0) would wrongly
+overwrite key[0] (which must stay invalid on internal pages).
 
 **Internal Merge:**
 ```
