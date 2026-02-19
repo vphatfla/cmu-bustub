@@ -201,6 +201,14 @@ class BPlusTree {
 
   /// @brief Merge src_page INTO dest_page (src_page entries are copied to dest_page)
   void MergeTwoLeafPages(LeafPage *dest_page, LeafPage *src_page);
+
+  /// @brief Merge src_page INTO dest_page
+  /// @param dest_page: internal_page that will have all the k-v from both pages
+  /// @param src_page: the page that giving away its k-v from both pages
+  /// @param parent_page: parent of both pages, this is needed to pull down the correct key for the dest_page when
+  /// merging
+  void MergeTwoInternalPages(InternalPage *dest_page, InternalPage *src_page, InternalPage *parent_page,
+                             const int right_child_index);
   /// @brief Given a key, traverse all the way to the leaf node that contains the key
   /// @note Caller must push root guard onto guard_set before calling. For Insert, caller handles header page
   /// separately.
@@ -244,8 +252,8 @@ class BPlusTree {
   /// @brief Handle remove the Key and Value pair in InternalPage
   /// This is used during the merging of sibling children
   /// @param page: parent InternalPage pointer
-  /// @param child_index: the index of the left sibling that we're preserve
-  void RemoveKeyValueInInternalPage(Context &ctx, WritePageGuard guard, size_t child_index);
+  /// @param separator_index: index of key-value to remove
+  void RemoveKeyValueInInternalPage(Context &ctx, WritePageGuard guard, size_t separator_index);
 };
 
 /**

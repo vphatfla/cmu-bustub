@@ -474,11 +474,13 @@ void BPLUSTREE_TYPE::Remove(const KeyType &key) {
   if (left_guard_opt.has_value()) {
     auto left_sibling_page = left_guard_opt.value().template AsMut<LeafPage>();
     MergeTwoLeafPages(left_sibling_page, leaf_page);
-    // TODO: Remove key at child_index from parent, handle cascading
+    // TODO: Wire up cascading delete to parent
+    // RemoveKeyValueInInternalPage(ctx, std::move(parent_guard), child_index);
   } else if (right_guard_opt.has_value()) {
     auto right_sibling_page = right_guard_opt.value().template AsMut<LeafPage>();
     MergeTwoLeafPages(leaf_page, right_sibling_page);
-    // TODO: Remove key at child_index+1 from parent, handle cascading
+    // TODO: Wire up cascading delete to parent
+    // RemoveKeyValueInInternalPage(ctx, std::move(parent_guard), child_index + 1);
   }
 }
 
@@ -642,7 +644,9 @@ void BPLUSTREE_TYPE::MergeTwoLeafPages(LeafPage *dest_page, LeafPage *src_page) 
 FULL_INDEX_TEMPLATE_ARGUMENTS
 void BPLUSTREE_TYPE::RemoveKeyValueInInternalPage(Context &ctx, WritePageGuard guard, size_t child_index) {
   auto page = guard.AsMut<InternalPage>();
-  page->ShiftKeyAndValueRight(child_index + 1);
+  // TODO: FIX - should be ShiftKeyAndValueLeft(child_index), not child_index + 1
+  // ShiftKeyAndValueLeft(i) removes entry at index i; child_index IS the entry to remove
+  page->ShiftKeyAndValueLeft(child_index + 1);
   page->SetSize(page->GetSize() - 1);
 
   if (page->GetSize() >= page->GetMinSize()) {
@@ -650,6 +654,8 @@ void BPLUSTREE_TYPE::RemoveKeyValueInInternalPage(Context &ctx, WritePageGuard g
   }
 
   if (ctx.IsRootPage(guard.GetPageId())) {
+    // TODO: FIX - when root has size==1, promote its only child to new root
+    // if (page->GetSize() == 1) { update header_page->root_page_id_ = page->ValueAt(0); }
     return;
   }
 
@@ -662,16 +668,32 @@ void BPLUSTREE_TYPE::RemoveKeyValueInInternalPage(Context &ctx, WritePageGuard g
   // try left
   auto left_sibling_guard = GetLeftSiblingPage(parent_page, curr_child_index);
   if (left_sibling_guard.has_value()) {
-    // todo: redistribute
+    auto left_sibling_page = left_sibling_guard.value().template AsMut<InternalPage>();
+    if (RedistributeInternalPageLeftSibling(page, left_sibling_page, parent_page, curr_child_index)) {
+      return;
+    }
   }
   // try right
   auto right_sibling_guard = GetRightSiblingPage(parent_page, curr_child_index);
   if (right_sibling_guard.has_value()) {
-    // TODO
+    auto right_sibling_page = right_sibling_guard.value().template AsMut<InternalPage>();
+    if (RedistributeInternalPageRightSibling(page, right_sibling_page, parent_page, curr_child_index)) {
+      return;
+    }
   }
 
-  // TODO
-  // try merging
+  // merge then recurisvely call this function
+  if (left_sibling_guard.has_value()) {
+    auto left_sibling_page = left_sibling_guard.value().template AsMut<InternalPage>();
+    auto right_child_index = parent_page->ValueIndex(guard.GetPageId());
+    MergeTwoInternalPages(left_sibling_page, page, parent_page, right_child_index);
+    RemoveKeyValueInInternalPage(ctx, std::move(parent_guard), right_child_index);
+  } else if (right_sibling_guard.has_value()) {
+    auto right_sibling_page = right_sibling_guard.value().template AsMut<InternalPage>();
+    auto right_child_index = parent_page->ValueIndex(right_sibling_guard.value().GetPageId());
+    MergeTwoInternalPages(page, right_sibling_page, parent_page, right_child_index);
+    RemoveKeyValueInInternalPage(ctx, std::move(parent_guard), right_child_index);
+  }
 }
 
 FULL_INDEX_TEMPLATE_ARGUMENTS
@@ -723,6 +745,26 @@ auto BPLUSTREE_TYPE::RedistributeInternalPageRightSibling(InternalPage *curr_pag
   sibling_page->SetSize(sibling_page->GetSize() - 1);
   curr_page->SetSize(n + 1);
   return true;
+}
+
+FULL_INDEX_TEMPLATE_ARGUMENTS
+void BPLUSTREE_TYPE::MergeTwoInternalPages(InternalPage *dest_page, InternalPage *src_page, InternalPage *parent_page,
+                                           const int right_child_index) {
+  auto n = dest_page->GetSize();
+
+  // pull the key down from parent
+  dest_page->SetKeyAt(n, parent_page->KeyAt(right_child_index));
+
+  // move k-v from src_page to dest_page
+  dest_page->SetValueAt(n, src_page->ValueAt(0));
+
+  for (auto i = 1; i < src_page->GetSize(); i += 1) {
+    dest_page->SetKeyAt(n + i, src_page->KeyAt(i));
+    dest_page->SetValueAt(n + i, src_page->ValueAt(i));
+  }
+
+  // TODO: FIX - missing SetSize after merge
+  // dest_page->SetSize(n + src_page->GetSize());
 }
 /*****************************************************************************
  * INDEX ITERATOR

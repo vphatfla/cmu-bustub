@@ -367,11 +367,11 @@ auto RedistributeLeafPageLeftSibling(LeafPage* curr, LeafPage* sibling) -> bool;
 auto RedistributeLeafPageRightSibling(LeafPage* curr, LeafPage* sibling) -> bool;
 void MergeTwoLeafPages(LeafPage* dest_page, LeafPage* src_page);
 
-// Internal page remove helpers
-void RemoveKeyValueInInternalPage(Context& ctx, WritePageGuard guard, size_t child_index);
+// Internal page remove helpers — all called within RemoveKeyValueInInternalPage
+void RemoveKeyValueInInternalPage(Context& ctx, WritePageGuard guard, size_t child_index);  // ✅ Entry point for cascading delete
 auto RedistributeInternalPageLeftSibling(InternalPage* curr, InternalPage* sibling, InternalPage* parent, int curr_child_index) -> bool;  // ✅ DONE
 auto RedistributeInternalPageRightSibling(InternalPage* curr, InternalPage* sibling, InternalPage* parent, int curr_child_index) -> bool;  // ✅ DONE
-// TODO: void MergeTwoInternalPages(...);
+void MergeTwoInternalPages(InternalPage* curr, InternalPage* sibling, InternalPage* parent, int curr_child_index);  // TODO
 
 // Template function for traversal (in header file)
 template <typename GuardType>
@@ -889,27 +889,65 @@ sibling_page->DecreaseAllTombstonesIndexes();  // All sibling tombstones shift l
 
 ---
 
-## TODO: Internal Page Cascading Delete
+## Internal Page Cascading Delete — Design
 
-After merging leaf pages, the separator key must be removed from parent:
+### Overview
+`RemoveKeyValueInInternalPage` is the single entry point for cascading deletes up the tree.
+Both leaf merge and internal merge callers use this same function to remove a separator from the parent.
+Redistribute and merge of internal pages happen **within** this function.
+
+### Call Flow
+```
+Remove(key):
+  ...leaf level underfull...
+  → MergeTwoLeafPages(dest, src)        // leaf-only work (no parent needed)
+  → RemoveKeyValueInInternalPage(ctx, parent_guard, child_index)  // caller removes separator
+      1. Shift keys/values left to remove entry at child_index
+      2. Decrease size
+      3. If this is root (write_set empty):
+         - Size >= 2 → done (root can be underfull)
+         - Size == 1 → only child becomes new root, update header
+      4. If not root AND size < min_size:
+         - Try RedistributeInternalPageLeftSibling → done
+         - Try RedistributeInternalPageRightSibling → done
+         - Neither works → MergeTwoInternalPages(curr, sibling, parent, ci)
+         - Recursively call RemoveKeyValueInInternalPage(ctx, grandparent_guard, parent_ci)
+```
+
+### MergeTwoInternalPages Signature & Logic
+```cpp
+void MergeTwoInternalPages(InternalPage* curr, InternalPage* sibling,
+                           InternalPage* parent, int curr_child_index);
+```
+
+**Steps (always merge into left page):**
+1. Determine which page is left vs right based on curr_child_index
+2. Find separator key index in parent (between the two children)
+3. Pull separator key DOWN: append to left page with right's first pointer (value[0])
+4. Copy remaining keys/values from right page into left page
+5. Update sizes
+6. Caller (RemoveKeyValueInInternalPage) then removes separator from parent → may cascade
 
 ```
-Internal Page Merge (different from leaf merge):
-├── Separator key from parent is PULLED DOWN into merged node
-├── No tombstones on internal pages
-└── May cascade further up the tree
+BEFORE:
+         Parent: [ _ ][20][50][80]  ptrs: [A][L][R][D]
+         Left (curr):  [ _ ][10][15]  ptrs: [a][b][c][d]
+         Right (sib):  [ _ ][55][60]  ptrs: [e][f][g][h]
 
-RemoveKeyFromInternalPage(parent, key_index, ctx):
-1. Shift keys/values left to remove entry at key_index
-2. Decrease parent size
-3. If parent is root:
-   - Size >= 2 → Done
-   - Size == 1 → Only child becomes new root, update header
-4. If parent not root AND size < min_size:
-   - Try redistribute from internal sibling
-   - If can't redistribute → merge internal pages
-   - Recursively RemoveKeyFromInternalPage on grandparent
+Step 1: left.SetKeyAt(left.size, parent.KeyAt(sep_idx))  → append key 50
+Step 2: left.SetValueAt(left.size, right.ValueAt(0))     → append ptr [e]
+Step 3: left.IncSize(1)
+Step 4: Copy right's keys[1..n-1] and values[1..n-1] into left
+Step 5: left.SetSize(left.size + right.size - 1)
+
+AFTER:
+         Left:  [ _ ][10][15][50][55][60]  ptrs: [a][b][c][d][e][f][g][h]
+         Parent: separator 50 removed by caller → may cascade
 ```
+
+**Key differences from leaf merge:**
+- Leaf merge: just copy entries, no separator pull-down, has tombstones
+- Internal merge: separator key pulled down from parent, no tombstones
 
 **Internal Page Layout Reminder:**
 ```
@@ -1005,4 +1043,57 @@ Before:  Parent: [..., K_sep, ...]
 After:   Parent: [...] (K_sep removed, may cascade)
          Left: [..., K_sep, ...right's entries...]
                      ↑ separator PULLED DOWN into merged node
+```
+
+---
+
+## Known Bugs / TODOs in Current Implementation
+
+### Bug 1: ShiftKeyAndValueLeft uses wrong index (b_plus_tree.cpp:645)
+```cpp
+// CURRENT (wrong):
+page->ShiftKeyAndValueLeft(child_index + 1);  // removes entry at child_index+1
+
+// FIX:
+page->ShiftKeyAndValueLeft(child_index);      // removes entry at child_index
+```
+`ShiftKeyAndValueLeft(i)` removes the entry at index `i`. We want to remove `child_index` (the right child's entry), not `child_index + 1`.
+
+### Bug 2: Root with size==1 not promoted (b_plus_tree.cpp:652-654)
+When root internal page drops to size 1, its only child should become the new root.
+```cpp
+// CURRENT (incomplete):
+if (ctx.IsRootPage(guard.GetPageId())) {
+    return;  // just returns, doesn't handle size==1
+}
+
+// FIX:
+if (ctx.IsRootPage(guard.GetPageId())) {
+    if (page->GetSize() == 1) {
+        auto header_guard = std::move(ctx.header_page_.value());
+        auto header_page = header_guard.AsMut<BPlusTreeHeaderPage>();
+        header_page->root_page_id_ = page->ValueAt(0);
+        ctx.root_page_id_ = page->ValueAt(0);
+    }
+    return;
+}
+```
+
+### Bug 3: MergeTwoInternalPages missing SetSize (b_plus_tree.cpp:758)
+After copying all entries, `dest_page` size is never updated.
+```cpp
+// FIX: add at end of MergeTwoInternalPages
+dest_page->SetSize(n + src_page->GetSize());
+```
+
+### TODO 4: Wire leaf merge to RemoveKeyValueInInternalPage (b_plus_tree.cpp:472-482)
+Leaf merge in `Remove()` doesn't cascade to parent yet.
+```cpp
+// Left sibling merge:
+MergeTwoLeafPages(left_sibling_page, leaf_page);
+RemoveKeyValueInInternalPage(ctx, std::move(parent_guard), child_index);
+
+// Right sibling merge:
+MergeTwoLeafPages(leaf_page, right_sibling_page);
+RemoveKeyValueInInternalPage(ctx, std::move(parent_guard), child_index + 1);
 ```
