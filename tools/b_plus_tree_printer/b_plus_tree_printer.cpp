@@ -79,7 +79,7 @@ auto main(int argc, char **argv) -> int {
   // create and fetch header_page
   page_id_t root_pid = bpm->NewPage();
   // create b+ tree
-  BPlusTree<GenericKey<8>, RID, GenericComparator<8>,2> tree("foo_pk", root_pid, bpm, comparator, leaf_max_size,
+  BPlusTree<GenericKey<8>, RID, GenericComparator<8>,0> tree("foo_pk", root_pid, bpm, comparator, leaf_max_size,
 															 internal_max_size);
 
   while (!quit) {

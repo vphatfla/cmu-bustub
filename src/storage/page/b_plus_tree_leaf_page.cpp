@@ -108,7 +108,7 @@ void B_PLUS_TREE_LEAF_PAGE_TYPE::RemoveIndexFromTombstones(const size_t index) {
 
   BUSTUB_ENSURE(pos != -1, "Can not found pos to remove index, index=");
 
-  for (size_t i = pos; i < num_tombstones_; i += 1) {
+  for (size_t i = pos; i < num_tombstones_ - 1; i += 1) {
     tombstones_[i] = tombstones_[i + 1];
   }
 
@@ -148,7 +148,6 @@ void B_PLUS_TREE_LEAF_PAGE_TYPE::AddIndexToTombstones(const size_t index) {
   tombstones_[num_tombstones_] = index;
   num_tombstones_ += 1;
 }
-
 
 FULL_INDEX_TEMPLATE_ARGUMENTS
 auto B_PLUS_TREE_LEAF_PAGE_TYPE::GetIndexesInTombstones() const -> std::vector<size_t> {

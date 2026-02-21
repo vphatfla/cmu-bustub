@@ -71,8 +71,6 @@ class BPlusTreeInternalPage : public BPlusTreePage {
 
   void ShiftKeyAndValueLeft(const size_t index);
 
-  auto GetMinSize() const -> int;
-
   /**
    * @brief For test only, return a string representing all keys in
    * this internal page, formatted as "(key1,key2,key3,...)"

@@ -147,7 +147,7 @@ auto BPLUSTREE_TYPE::Insert(const KeyType &key, const ValueType &value) -> bool 
 
     WritePageGuard leaf_guard = bpm_->WritePage(new_page_id);
     auto leaf_page = leaf_guard.AsMut<LeafPage>();
-    leaf_page->Init();
+    leaf_page->Init(leaf_max_size_);
 
     ctx.write_set_.emplace_back(std::move(leaf_guard));
   } else {
@@ -406,27 +406,25 @@ void BPLUSTREE_TYPE::Remove(const KeyType &key) {
     return;
   }
 
-  auto new_logical_size = leaf_page->GetSize() - leaf_page->GetTombstonesSize() - 1;
-  auto min_required_size = static_cast<size_t>(leaf_page->GetMinSize());
-  if (new_logical_size >= min_required_size) {
+  // Step 1: Perform deletion (physical or tombstone)
+  if constexpr (LEAF_PAGE_TOMB_CNT == 0) {
+    leaf_page->ShiftKeyAndValueLeft(pos.value());
+    leaf_page->SetSize(leaf_page->GetSize() - 1);
+  } else {
     if (!leaf_page->IsTombstonesFull()) {
-      // still have space, add the k-v to tombstone
       leaf_page->AddIndexToTombstones(pos.value());
-      return;
+    } else {
+      leaf_page->DeleteOldestKeyInTombstones();
+      auto new_pos = FindIndexOfKeyInLeafPage(leaf_page, key);
+      leaf_page->AddIndexToTombstones(new_pos.value());
     }
-    leaf_page->DeleteOldestKeyInTombstones();
-    auto new_pos = FindIndexOfKeyInLeafPage(leaf_page, key);
-    leaf_page->AddIndexToTombstones(new_pos.value());
-    return;
   }
 
-  // Adding the key to tombstone before redistribute/merge
-  if (!leaf_page->IsTombstonesFull()) {
-    leaf_page->AddIndexToTombstones(pos.value());
-  } else {
-    leaf_page->DeleteOldestKeyInTombstones();
-    auto new_pos = FindIndexOfKeyInLeafPage(leaf_page, key);
-    leaf_page->AddIndexToTombstones(new_pos.value());
+  // Step 2: Check if page is still valid
+  auto logical_size = leaf_page->GetSize() - leaf_page->GetTombstonesSize();
+  auto min_required_size = static_cast<size_t>(leaf_page->GetMinSize());
+  if (logical_size >= min_required_size) {
+    return;
   }
 
   if (ctx.write_set_.empty()) {
@@ -637,6 +635,11 @@ void BPLUSTREE_TYPE::MergeTwoLeafPages(LeafPage *dest_page, LeafPage *src_page) 
 
   // Update sibling pointer: dest now points to src's next
   dest_page->SetNextPageId(src_page->GetNextPageId());
+
+  // need to check if merged tombstone is oversized
+  while (dest_page->GetSize() > dest_page->GetMaxSize() && dest_page->GetTombstonesSize() > 0) {
+    dest_page->DeleteOldestKeyInTombstones();
+  }
 }
 
 FULL_INDEX_TEMPLATE_ARGUMENTS
@@ -655,8 +658,8 @@ void BPLUSTREE_TYPE::RemoveKeyValueInInternalPage(Context &ctx, WritePageGuard g
     if (page->GetSize() == 1) {
       auto header_page_guard = std::move(ctx.header_page_.value());
       auto header_page = header_page_guard.AsMut<BPlusTreeHeaderPage>();
-      header_page->root_page_id_ = guard.GetPageId();
-      ctx.root_page_id_ = guard.GetPageId();
+      header_page->root_page_id_ = page->ValueAt(0);
+      ctx.root_page_id_ = page->ValueAt(0);
     }
     return;
   }
