@@ -98,9 +98,6 @@ class BPlusTreeLeafPage : public BPlusTreePage {
   /// @brief Add index to tombstone, increase the tombstone size
   void AddIndexToTombstones(const size_t index);
 
-  /// @brief Return the min required size of the leaf page at all time
-  auto GetMinSize() const -> size_t;
-
   /// @brief Return all indexes in tombstones
   auto GetIndexesInTombstones() const -> std::vector<size_t>;
 

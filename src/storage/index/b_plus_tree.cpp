@@ -407,7 +407,7 @@ void BPLUSTREE_TYPE::Remove(const KeyType &key) {
   }
 
   auto new_logical_size = leaf_page->GetSize() - leaf_page->GetTombstonesSize() - 1;
-  auto min_required_size = leaf_page->GetMinSize();
+  auto min_required_size = static_cast<size_t>(leaf_page->GetMinSize());
   if (new_logical_size >= min_required_size) {
     if (!leaf_page->IsTombstonesFull()) {
       // still have space, add the k-v to tombstone
@@ -474,13 +474,11 @@ void BPLUSTREE_TYPE::Remove(const KeyType &key) {
   if (left_guard_opt.has_value()) {
     auto left_sibling_page = left_guard_opt.value().template AsMut<LeafPage>();
     MergeTwoLeafPages(left_sibling_page, leaf_page);
-    // TODO: Wire up cascading delete to parent
-    // RemoveKeyValueInInternalPage(ctx, std::move(parent_guard), child_index);
+    RemoveKeyValueInInternalPage(ctx, std::move(parent_guard), child_index);
   } else if (right_guard_opt.has_value()) {
     auto right_sibling_page = right_guard_opt.value().template AsMut<LeafPage>();
     MergeTwoLeafPages(leaf_page, right_sibling_page);
-    // TODO: Wire up cascading delete to parent
-    // RemoveKeyValueInInternalPage(ctx, std::move(parent_guard), child_index + 1);
+    RemoveKeyValueInInternalPage(ctx, std::move(parent_guard), child_index + 1);
   }
 }
 
@@ -524,13 +522,13 @@ auto BPLUSTREE_TYPE::GetRightSiblingPage(InternalPage *parent_page, int child_in
 FULL_INDEX_TEMPLATE_ARGUMENTS
 auto BPLUSTREE_TYPE::RedistributeLeafPageLeftSibling(LeafPage *curr_page, LeafPage *sibling_page) -> bool {
   auto sibling_logical_size = sibling_page->GetSize() - sibling_page->GetTombstonesSize();
-  auto sibling_min_required_size = sibling_page->GetMinSize();
+  auto sibling_min_required_size = static_cast<size_t>(sibling_page->GetMinSize());
   if (sibling_logical_size <= sibling_min_required_size) {
     return false;  // can't spare any k-v
   }
 
   auto curr_logical_size = curr_page->GetSize() - curr_page->GetTombstonesSize();
-  auto curr_min_required_size = curr_page->GetMinSize();
+  auto curr_min_required_size = static_cast<size_t>(curr_page->GetMinSize());
   auto sibling_index = sibling_page->GetSize() - 1;
   while (curr_logical_size < curr_min_required_size &&
          (sibling_page->GetSize() - sibling_page->GetTombstonesSize()) > sibling_min_required_size) {
@@ -561,13 +559,13 @@ auto BPLUSTREE_TYPE::RedistributeLeafPageLeftSibling(LeafPage *curr_page, LeafPa
 FULL_INDEX_TEMPLATE_ARGUMENTS
 auto BPLUSTREE_TYPE::RedistributeLeafPageRightSibling(LeafPage *curr_page, LeafPage *sibling_page) -> bool {
   auto sibling_logical_size = sibling_page->GetSize() - sibling_page->GetTombstonesSize();
-  auto sibling_min_required_size = sibling_page->GetMinSize();
+  auto sibling_min_required_size = static_cast<size_t>(sibling_page->GetMinSize());
   if (sibling_logical_size <= sibling_min_required_size) {
     return false;  // can't spare any k-v
   }
 
   auto curr_logical_size = curr_page->GetSize() - curr_page->GetTombstonesSize();
-  auto curr_min_required_size = curr_page->GetMinSize();
+  auto curr_min_required_size = static_cast<size_t>(curr_page->GetMinSize());
   auto curr_index = curr_page->GetSize();
   while (curr_logical_size < curr_min_required_size &&
          (sibling_page->GetSize() - sibling_page->GetTombstonesSize()) > sibling_min_required_size) {
@@ -644,18 +642,22 @@ void BPLUSTREE_TYPE::MergeTwoLeafPages(LeafPage *dest_page, LeafPage *src_page) 
 FULL_INDEX_TEMPLATE_ARGUMENTS
 void BPLUSTREE_TYPE::RemoveKeyValueInInternalPage(Context &ctx, WritePageGuard guard, size_t child_index) {
   auto page = guard.AsMut<InternalPage>();
-  // TODO: FIX - should be ShiftKeyAndValueLeft(child_index), not child_index + 1
   // ShiftKeyAndValueLeft(i) removes entry at index i; child_index IS the entry to remove
-  page->ShiftKeyAndValueLeft(child_index + 1);
+  page->ShiftKeyAndValueLeft(child_index);
   page->SetSize(page->GetSize() - 1);
 
   if (page->GetSize() >= page->GetMinSize()) {
+    // internal page is sufficient
     return;
   }
 
   if (ctx.IsRootPage(guard.GetPageId())) {
-    // TODO: FIX - when root has size==1, promote its only child to new root
-    // if (page->GetSize() == 1) { update header_page->root_page_id_ = page->ValueAt(0); }
+    if (page->GetSize() == 1) {
+      auto header_page_guard = std::move(ctx.header_page_.value());
+      auto header_page = header_page_guard.AsMut<BPlusTreeHeaderPage>();
+      header_page->root_page_id_ = guard.GetPageId();
+      ctx.root_page_id_ = guard.GetPageId();
+    }
     return;
   }
 
@@ -763,8 +765,7 @@ void BPLUSTREE_TYPE::MergeTwoInternalPages(InternalPage *dest_page, InternalPage
     dest_page->SetValueAt(n + i, src_page->ValueAt(i));
   }
 
-  // TODO: FIX - missing SetSize after merge
-  // dest_page->SetSize(n + src_page->GetSize());
+  dest_page->SetSize(n + src_page->GetSize());
 }
 /*****************************************************************************
  * INDEX ITERATOR

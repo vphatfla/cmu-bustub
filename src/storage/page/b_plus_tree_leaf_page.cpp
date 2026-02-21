@@ -149,10 +149,6 @@ void B_PLUS_TREE_LEAF_PAGE_TYPE::AddIndexToTombstones(const size_t index) {
   num_tombstones_ += 1;
 }
 
-FULL_INDEX_TEMPLATE_ARGUMENTS
-auto B_PLUS_TREE_LEAF_PAGE_TYPE::GetMinSize() const -> size_t {
-  return std::ceil(static_cast<double>(GetMaxSize()) / 2);
-}
 
 FULL_INDEX_TEMPLATE_ARGUMENTS
 auto B_PLUS_TREE_LEAF_PAGE_TYPE::GetIndexesInTombstones() const -> std::vector<size_t> {
