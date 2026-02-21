@@ -95,15 +95,10 @@ Remove(key):
    - If < min_size → redistribute or merge, cascade up
 ```
 
-### Merge overfull issue (KNOWN, TODO)
+### Merge overfull fix — ✅ DONE
 - `MergeTwoLeafPages` copies ALL physical entries including tombstoned ones
-- Combined physical size can exceed `max_size` (e.g., size=3, max_size=2)
-- **Planned fix:** After merge tombstone rebuild, evict until `size <= max_size`:
-  ```cpp
-  while (dest_page->GetSize() > dest_page->GetMaxSize() && dest_page->GetTombstonesSize() > 0) {
-    dest_page->DeleteOldestKeyInTombstones();
-  }
-  ```
+- Combined physical size can exceed `max_size` due to tombstoned entries
+- **Fixed** at `b_plus_tree.cpp:639-642`: after tombstone rebuild, evict until `size <= max_size`
 
 ### OptimisticDeleteTest — Expected failure (Task #4 not done)
 - Test expects read latches during traversal (optimistic latch crabbing)
@@ -124,6 +119,7 @@ Remove(key):
 | ShiftKeyAndValueLeft wrong index | Uses `child_index` not `child_index + 1` | `b_plus_tree.cpp:646` |
 | MergeTwoInternalPages missing SetSize | `dest_page->SetSize(n + src_page->GetSize())` | `b_plus_tree.cpp:768` |
 | Leaf merge not wired to parent cascade | Calls `RemoveKeyValueInInternalPage` after merge | `b_plus_tree.cpp:474-482` |
+| Merge overfull (size > max_size) | Evict tombstones after merge until `size <= max_size` | `b_plus_tree.cpp:639-642` |
 
 ---
 
@@ -297,6 +293,5 @@ make check-clang-tidy-p2
 
 ## Remaining TODOs
 
-1. **Merge overfull fix** — evict tombstones after merge until `size <= max_size`
-2. **Task #3: Index Iterator** — `Begin()`, `End()`, `operator++`, skip tombstoned entries
-3. **Task #4: Concurrency Control** — optimistic latch crabbing (read down, write only on leaf)
+1. **Task #3: Index Iterator** — `Begin()`, `End()`, `operator++`, skip tombstoned entries
+2. **Task #4: Concurrency Control** — optimistic latch crabbing (read down, write only on leaf)
