@@ -14,6 +14,12 @@
  * index_iterator.cpp
  */
 #include <cassert>
+#include <memory>
+#include <unordered_set>
+#include "buffer/buffer_pool_manager.h"
+#include "common/config.h"
+#include "common/macros.h"
+#include "storage/page/b_plus_tree_page.h"
 
 #include "storage/index/index_iterator.h"
 
@@ -30,15 +36,65 @@ FULL_INDEX_TEMPLATE_ARGUMENTS
 INDEXITERATOR_TYPE::~IndexIterator() = default;  // NOLINT
 
 FULL_INDEX_TEMPLATE_ARGUMENTS
-auto INDEXITERATOR_TYPE::IsEnd() -> bool { UNIMPLEMENTED("TODO(P2): Add implementation."); }
-
-FULL_INDEX_TEMPLATE_ARGUMENTS
-auto INDEXITERATOR_TYPE::operator*() -> std::pair<const KeyType &, const ValueType &> {
-  UNIMPLEMENTED("TODO(P2): Add implementation.");
+INDEXITERATOR_TYPE::IndexIterator(std::shared_ptr<BufferPoolManager> bpm, const page_id_t page_id)
+    : bpm_(bpm), page_id_(page_id) {
+  LoadPageAndIterator(page_id_);
 }
 
 FULL_INDEX_TEMPLATE_ARGUMENTS
-auto INDEXITERATOR_TYPE::operator++() -> INDEXITERATOR_TYPE & { UNIMPLEMENTED("TODO(P2): Add implementation."); }
+void INDEXITERATOR_TYPE::FindAndSetValidIndex() {
+  while (key_index_ < leaf_page_->GetSize()) {
+    if (tombstone_indices_set_.count(key_index_)) {
+      key_index_ += 1;
+    } else {
+      break;
+    }
+  }
+}
+
+FULL_INDEX_TEMPLATE_ARGUMENTS
+void INDEXITERATOR_TYPE::LoadPageAndIterator(const page_id_t page_id) {
+  page_id_ = page_id;
+  if (page_id == INVALID_PAGE_ID) {
+    return;
+  }
+
+  read_guard_ = bpm_->ReadPage(page_id);
+  leaf_page_ = read_guard_.As<LeafPage>();
+  key_index_ = 0;
+  tombstone_indices_set_.clear();
+
+  auto indices = leaf_page_->GetIndexesInTombstones();
+  tombstone_indices_set_ = {indices.begin(), indices.end()};
+
+  FindAndSetValidIndex();
+
+  if (key_index_ >= leaf_page_->GetSize()) {
+    // no keys in this leaf page is valid (all tombstone)
+    // go to next sibling page
+    LoadPageAndIterator(leaf_page_->GetNextPageId());
+  }
+}
+
+FULL_INDEX_TEMPLATE_ARGUMENTS
+auto INDEXITERATOR_TYPE::IsEnd() -> bool { return page_id_ == INVALID_PAGE_ID; }
+
+FULL_INDEX_TEMPLATE_ARGUMENTS
+auto INDEXITERATOR_TYPE::operator*() -> std::pair<const KeyType &, const ValueType &> {
+  BUSTUB_ENSURE(!IsEnd(), "iterator is not value");
+
+  return {leaf_page_->KeyAt(key_index_), leaf_page_->ValueAt(key_index_)};
+}
+
+FULL_INDEX_TEMPLATE_ARGUMENTS
+auto INDEXITERATOR_TYPE::operator++() -> INDEXITERATOR_TYPE & {
+  key_index_ += 1;
+  FindAndSetValidIndex();
+  if (key_index_ >= leaf_page_->GetSize()) {
+    LoadPageAndIterator(leaf_page_->GetNextPageId());
+  }
+  return *this;
+}
 
 template class IndexIterator<GenericKey<4>, RID, GenericComparator<4>>;
 

@@ -13,8 +13,8 @@
 | Task | Description | Status |
 |------|-------------|--------|
 | Task #1 | B+Tree Pages (Base, Internal, Leaf) | ✅ DONE |
-| Task #2 | B+Tree Operations (Insert, Delete, Search) | 🔄 IN PROGRESS |
-| Task #3 | Index Iterator | TODO |
+| Task #2 | B+Tree Operations (Insert, Delete, Search) | ✅ DONE |
+| Task #3 | Index Iterator | 🔄 IN PROGRESS |
 | Task #4 | Concurrency Control (latch crabbing) | TODO |
 
 ---
@@ -150,7 +150,7 @@ Remove(key):
 
 ---
 
-## Task #2: B+Tree Operations - IN PROGRESS
+## Task #2: B+Tree Operations - DONE
 
 ### Implementation Status
 | Method | Status |
@@ -291,7 +291,38 @@ make check-clang-tidy-p2
 
 ---
 
+## Task #3: Index Iterator - IN PROGRESS
+
+### Design
+- Iterator holds: `BufferPoolManager*`, `ReadPageGuard`, `LeafPage*`, `page_id_t`, `int key_index_`, `unordered_set<size_t> tombstone_indices_set_`
+- Default member initializers: `page_id_{INVALID_PAGE_ID}`, `key_index_{0}`
+- End sentinel: default-constructed iterator with `page_id_ == INVALID_PAGE_ID`
+
+### Implementation Status
+| Method | Status |
+|--------|--------|
+| `IndexIterator()` default ctor | ✅ DONE |
+| `IndexIterator(bpm, page_id)` | ✅ DONE |
+| `IsEnd()` | ✅ DONE |
+| `operator*()` | ✅ DONE |
+| `operator++()` | ✅ DONE |
+| `operator==` / `operator!=` | ✅ DONE |
+| `FindAndSetValidIndex()` | ✅ DONE |
+| `LoadPageAndIterator()` | ✅ DONE |
+| `Begin()` in BPlusTree | TODO |
+| `Begin(key)` in BPlusTree | TODO |
+| `End()` in BPlusTree | TODO |
+
+### Key Decisions
+- **Tombstone skipping by index**: Uses `unordered_set<size_t>` of tombstoned indices (from `GetIndexesInTombstones()`), not keys — avoids `GenericKey` hash/comparator issues
+- **FindAndSetValidIndex()**: Skips consecutive tombstoned indices starting from current `key_index_`
+- **LoadPageAndIterator()**: Recursively follows `next_page_id_` if all entries on a page are tombstoned
+- **operator==**: Compares `page_id_` and `key_index_` (position equality, not object identity)
+- **operator!=**: Simply `!(*this == itr)`
+
+---
+
 ## Remaining TODOs
 
-1. **Task #3: Index Iterator** — `Begin()`, `End()`, `operator++`, skip tombstoned entries
+1. **Task #3**: Wire up `Begin()`, `Begin(key)`, `End()` in `b_plus_tree.cpp`
 2. **Task #4: Concurrency Control** — optimistic latch crabbing (read down, write only on leaf)
