@@ -295,25 +295,78 @@ make check-clang-tidy-p2
 
 ## Task #3: Index Iterator - IN PROGRESS
 
-### Design
-- Iterator holds: `BufferPoolManager*`, `ReadPageGuard`, `LeafPage*`, `page_id_t`, `int key_index_`, `unordered_set<size_t> tombstone_indices_set_`
-- Default member initializers: `page_id_{INVALID_PAGE_ID}`, `key_index_{0}`
-- End sentinel: default-constructed iterator with `page_id_ == INVALID_PAGE_ID`
+### Iterator Constructor (current signature)
+```cpp
+IndexIterator(shared_ptr<TracedBufferPoolManager> bpm, const KeyComparator& comparator,
+              page_id_t page_id, const optional<KeyType>& key);
+```
+- No default constructor — end sentinel is constructed with `INVALID_PAGE_ID`
+- `key` param: if `nullopt`, starts at index 0; if provided, binary searches for lower_bound position
+- Uses `TracedBufferPoolManager` (not plain `BufferPoolManager`)
+
+### Iterator Members
+- `bpm_`: `shared_ptr<TracedBufferPoolManager>`
+- `comparator_`: `KeyComparator` (marked `[[maybe_unused]]`)
+- `read_guard_`: `ReadPageGuard` of current leaf page
+- `leaf_page_`: `const LeafPage*` pointer into the guard
+- `page_id_`: current page id (`INVALID_PAGE_ID` = end)
+- `key_index_`: current index within leaf page
+- `tombstone_indices_set_`: `unordered_set<size_t>` for O(1) tombstone lookup
 
 ### Implementation Status
 | Method | Status |
 |--------|--------|
-| `IndexIterator()` default ctor | ✅ DONE |
-| `IndexIterator(bpm, page_id)` | ✅ DONE |
+| `IndexIterator(bpm, comparator, page_id, key)` | ✅ DONE |
+| `~IndexIterator()` | ✅ DONE (default) |
 | `IsEnd()` | ✅ DONE |
 | `operator*()` | ✅ DONE |
 | `operator++()` | ✅ DONE |
 | `operator==` / `operator!=` | ✅ DONE |
 | `FindAndSetValidIndex()` | ✅ DONE |
-| `LoadPageAndIterator()` | ✅ DONE |
-| `Begin()` in BPlusTree | TODO |
-| `Begin(key)` in BPlusTree | TODO |
-| `End()` in BPlusTree | TODO |
+| `LoadPageAndIterator(page_id, key)` | ✅ DONE |
+| `Begin()` in BPlusTree | ✅ DONE (has bug — see below) |
+| `Begin(key)` in BPlusTree | ✅ DONE (has bug — see below) |
+| `End()` in BPlusTree | ✅ DONE |
+
+### LoadPageAndIterator — Key logic
+1. If `page_id == INVALID_PAGE_ID` → return (end sentinel)
+2. Read page, get leaf pointer
+3. If `key` has value → binary search (lower_bound: first index where `key_at(i) >= key`)
+4. Build tombstone index set
+5. `FindAndSetValidIndex()` — skip tombstoned indices forward
+6. If `key_index_ >= size` → recurse to `next_page_id` (all entries tombstoned or past end)
+
+### Binary Search in LoadPageAndIterator — Lower bound pattern
+```cpp
+auto left = 0, right = leaf_page_->GetSize();
+while (left < right) {
+    auto mid = left + (right - left) / 2;
+    if (comparator_(leaf_page_->KeyAt(mid), key.value()) < 0) {
+        left = mid + 1;   // key_at(mid) < target → mid is too small, exclude
+    } else {
+        right = mid;       // key_at(mid) >= target → mid could be answer, keep
+    }
+}
+key_index_ = left;  // converged: first index where key_at(index) >= target
+```
+- `left = mid + 1`: safe because `key_at(mid) < target` means mid cannot be the answer
+- `right = mid` (NOT `mid - 1`): `key_at(mid) >= target` means mid *could* be the answer
+- `cmp == 0` is handled by the `else` branch (same as `cmp > 0`)
+
+### Begin() / Begin(key) / End() in BPlusTree
+
+**Begin()** (`b_plus_tree.cpp:789`):
+- Empty tree → return end sentinel
+- Traverse to leftmost leaf: always follow `ValueAt(0)` at each internal node
+- **BUG:** Line 804 does `ctx.read_set_.pop_front()` right after pushing the root guard — pops the only element, deque is empty, then `ctx.read_set_.back()` on line 807 crashes
+
+**Begin(key)** (`b_plus_tree.cpp:826`):
+- Empty tree → return end sentinel
+- Uses `TraverseNodesToLeaf(ctx.read_set_, key, true)` to find leaf containing key
+- Passes `key` to iterator constructor for lower_bound positioning
+- **BUG:** Same `pop_front()` issue — line 840 pops the root guard, deque is empty when `TraverseNodesToLeaf` tries to read `back()`
+
+**End()** (`b_plus_tree.cpp:852`): Correct — returns `{bpm_, comparator_, INVALID_PAGE_ID, nullopt}`
 
 ### Key Decisions
 - **Tombstone skipping by index**: Uses `unordered_set<size_t>` of tombstoned indices (from `GetIndexesInTombstones()`), not keys — avoids `GenericKey` hash/comparator issues
@@ -321,10 +374,13 @@ make check-clang-tidy-p2
 - **LoadPageAndIterator()**: Recursively follows `next_page_id_` if all entries on a page are tombstoned
 - **operator==**: Compares `page_id_` and `key_index_` (position equality, not object identity)
 - **operator!=**: Simply `!(*this == itr)`
+- **Begin(key) with tombstoned key**: Iterator automatically skips to next valid entry (lower_bound on logical keys)
+- **operator++** passes `std::nullopt` to `LoadPageAndIterator` when jumping to next page (always start from index 0)
 
 ---
 
 ## Remaining TODOs
 
-1. **Task #3**: Wire up `Begin()`, `Begin(key)`, `End()` in `b_plus_tree.cpp`
-2. **Task #4: Concurrency Control** — optimistic latch crabbing (read down, write only on leaf)
+1. **Task #3**: Fix `Begin()` and `Begin(key)` — remove erroneous `pop_front()` calls
+2. **Task #3**: Test iterator (`make b_plus_tree_iterator_test`)
+3. **Task #4: Concurrency Control** — optimistic latch crabbing (read down, write only on leaf)
