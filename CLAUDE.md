@@ -1,6 +1,8 @@
 # BusTub Working Context
 
 > **CLAUDE CODE DIRECTIVE:** Automatically update this context file as you work. Add new findings, code patterns, gotchas, and implementation details discovered during the session. Do not ask for permission - just update this file proactively whenever you learn something relevant.
+>
+> **MANDATORY:** Always re-read the relevant source files (using the Read tool) before answering any question about the codebase. Never rely on previously cached file contents — the user may have edited files between questions.
 
 ## Project: CMU 15-445 - Project 2: B+ Tree Index
 

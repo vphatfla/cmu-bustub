@@ -16,6 +16,7 @@
  */
 #pragma once
 #include <memory>
+#include <optional>
 #include <unordered_set>
 #include <utility>
 #include "buffer/buffer_pool_manager.h"
@@ -36,10 +37,10 @@ class IndexIterator {
 
  public:
   // you may define your own constructor based on your member variables
-  IndexIterator();
   ~IndexIterator();  // NOLINT
 
-  IndexIterator(std::shared_ptr<BufferPoolManager> bpm, const page_id_t page_id);
+  IndexIterator(std::shared_ptr<TracedBufferPoolManager> bpm, const KeyComparator &comparator, const page_id_t page_id,
+                const std::optional<KeyType> &key);
 
   auto IsEnd() -> bool;
 
@@ -59,8 +60,10 @@ class IndexIterator {
   // add your own private member variables here
 
   /// @brief BufferPoolManager shared pointer with the BPLusTree
-  std::shared_ptr<BufferPoolManager> bpm_;
+  std::shared_ptr<TracedBufferPoolManager> bpm_;
 
+  // @brief Key comparator
+  [[maybe_unused]] KeyComparator comparator_;
   /// @brief ReadPageGuard of the current_page, might be null
   ReadPageGuard read_guard_;
 
@@ -81,7 +84,7 @@ class IndexIterator {
 
   /// @brief load the iterator params
   /// this is needed since we might have to  "jump" to the new page
-  void LoadPageAndIterator(const page_id_t page_id);
+  void LoadPageAndIterator(const page_id_t page_id, const std::optional<KeyType> &key);
 };
 
 }  // namespace bustub

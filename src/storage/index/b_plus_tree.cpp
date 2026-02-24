@@ -21,6 +21,7 @@
 #include "common/config.h"
 #include "common/macros.h"
 #include "storage/index/b_plus_tree_debug.h"
+#include "storage/index/index_iterator.h"
 #include "storage/page/b_plus_tree_header_page.h"
 #include "storage/page/b_plus_tree_leaf_page.h"
 #include "storage/page/b_plus_tree_page.h"
@@ -68,17 +69,20 @@ auto BPLUSTREE_TYPE::IsEmpty() const -> bool {
 FULL_INDEX_TEMPLATE_ARGUMENTS
 auto BPLUSTREE_TYPE::GetValue(const KeyType &key, std::vector<ValueType> *result) -> bool {
   // Declaration of context instance. Using the Context is not necessary but advised.
-  Context ctx;
+  auto ctx = Context{};
 
   // Fetch header page and check if tree is empty
-  ReadPageGuard header_guard = bpm_->ReadPage(header_page_id_);
-  auto header_page = header_guard.As<BPlusTreeHeaderPage>();
-  if (header_page->root_page_id_ == INVALID_PAGE_ID) {
-    return false;
+  {
+    ReadPageGuard header_guard = bpm_->ReadPage(header_page_id_);
+    auto header_page = header_guard.As<BPlusTreeHeaderPage>();
+    if (header_page->root_page_id_ == INVALID_PAGE_ID) {
+      return false;
+    }
+    ctx.root_page_id_ = header_page->root_page_id_;
   }
 
   // Fetch root and traverse to leaf, releasing parent guards along the way
-  ctx.read_set_.emplace_back(bpm_->ReadPage(header_page->root_page_id_));
+  ctx.read_set_.emplace_back(bpm_->ReadPage(ctx.root_page_id_));
   TraverseNodesToLeaf(ctx.read_set_, key, true);
 
   auto leaf_page = ctx.read_set_.back().As<LeafPage>();
@@ -782,7 +786,36 @@ void BPLUSTREE_TYPE::MergeTwoInternalPages(InternalPage *dest_page, InternalPage
  * @return : index iterator
  */
 FULL_INDEX_TEMPLATE_ARGUMENTS
-auto BPLUSTREE_TYPE::Begin() -> INDEXITERATOR_TYPE { UNIMPLEMENTED("TODO(P2): Add implementation."); }
+auto BPLUSTREE_TYPE::Begin() -> INDEXITERATOR_TYPE {
+  auto ctx = Context{};
+
+  {
+    ReadPageGuard header_guard = bpm_->ReadPage(header_page_id_);
+    auto header_page = header_guard.As<BPlusTreeHeaderPage>();
+
+    if (header_page->root_page_id_ == INVALID_PAGE_ID) {
+      return INDEXITERATOR_TYPE{bpm_, comparator_, INVALID_PAGE_ID, std::nullopt};
+    }
+    ctx.root_page_id_ = header_page->root_page_id_;
+  }
+
+  auto curr_guard = bpm_->ReadPage(ctx.root_page_id_);
+  ctx.read_set_.emplace_back(std::move(curr_guard));
+  ctx.read_set_.pop_front();  // pop the header guard
+
+  while (true) {
+    auto curr_page = ctx.read_set_.back().As<BPlusTreePage>();
+    if (curr_page->IsLeafPage()) {
+      break;
+    }
+    auto curr_internal_page = ctx.read_set_.back().As<InternalPage>();
+    ctx.read_set_.emplace_back(bpm_->ReadPage(curr_internal_page->ValueAt(0)));
+    // drop the parent
+    ctx.read_set_.pop_front();
+  }
+
+  return INDEXITERATOR_TYPE{bpm_, comparator_, ctx.read_set_.back().GetPageId(), std::nullopt};
+}
 
 /**
  * @brief Input parameter is low key, find the leaf page that contains the input key
@@ -790,7 +823,25 @@ auto BPLUSTREE_TYPE::Begin() -> INDEXITERATOR_TYPE { UNIMPLEMENTED("TODO(P2): Ad
  * @return : index iterator
  */
 FULL_INDEX_TEMPLATE_ARGUMENTS
-auto BPLUSTREE_TYPE::Begin(const KeyType &key) -> INDEXITERATOR_TYPE { UNIMPLEMENTED("TODO(P2): Add implementation."); }
+auto BPLUSTREE_TYPE::Begin(const KeyType &key) -> INDEXITERATOR_TYPE {
+  auto ctx = Context{};
+  {
+    ReadPageGuard header_guard = bpm_->ReadPage(header_page_id_);
+    auto header_page = header_guard.As<BPlusTreeHeaderPage>();
+
+    if (header_page->root_page_id_ == INVALID_PAGE_ID) {
+      return INDEXITERATOR_TYPE{bpm_, comparator_, INVALID_PAGE_ID, std::nullopt};
+    }
+    ctx.root_page_id_ = header_page->root_page_id_;
+  }
+
+  auto curr_guard = bpm_->ReadPage(ctx.root_page_id_);
+  ctx.read_set_.emplace_back(std::move(curr_guard));
+  ctx.read_set_.pop_front();  // pop the header guard
+  TraverseNodesToLeaf(ctx.read_set_, key, true);
+
+  return INDEXITERATOR_TYPE{bpm_, comparator_, ctx.read_set_.back().GetPageId(), key};
+}
 
 /**
  * @brief Input parameter is void, construct an index iterator representing the end
@@ -798,7 +849,9 @@ auto BPLUSTREE_TYPE::Begin(const KeyType &key) -> INDEXITERATOR_TYPE { UNIMPLEME
  * @return : index iterator
  */
 FULL_INDEX_TEMPLATE_ARGUMENTS
-auto BPLUSTREE_TYPE::End() -> INDEXITERATOR_TYPE { UNIMPLEMENTED("TODO(P2): Add implementation."); }
+auto BPLUSTREE_TYPE::End() -> INDEXITERATOR_TYPE {
+  return INDEXITERATOR_TYPE{bpm_, comparator_, INVALID_PAGE_ID, std::nullopt};
+}
 
 /**
  * @return Page id of the root of this tree

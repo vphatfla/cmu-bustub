@@ -15,7 +15,9 @@
  */
 #include <cassert>
 #include <memory>
+#include <optional>
 #include <unordered_set>
+#include <utility>
 #include "buffer/buffer_pool_manager.h"
 #include "common/config.h"
 #include "common/macros.h"
@@ -30,15 +32,13 @@ namespace bustub {
  * set your own input parameters
  */
 FULL_INDEX_TEMPLATE_ARGUMENTS
-INDEXITERATOR_TYPE::IndexIterator() = default;
-
-FULL_INDEX_TEMPLATE_ARGUMENTS
 INDEXITERATOR_TYPE::~IndexIterator() = default;  // NOLINT
 
 FULL_INDEX_TEMPLATE_ARGUMENTS
-INDEXITERATOR_TYPE::IndexIterator(std::shared_ptr<BufferPoolManager> bpm, const page_id_t page_id)
-    : bpm_(bpm), page_id_(page_id) {
-  LoadPageAndIterator(page_id_);
+INDEXITERATOR_TYPE::IndexIterator(std::shared_ptr<TracedBufferPoolManager> bpm, const KeyComparator &comparator,
+                                  const page_id_t page_id, const std::optional<KeyType> &key)
+    : bpm_(bpm), comparator_(comparator), page_id_(page_id) {
+  LoadPageAndIterator(page_id_, key);
 }
 
 FULL_INDEX_TEMPLATE_ARGUMENTS
@@ -53,7 +53,7 @@ void INDEXITERATOR_TYPE::FindAndSetValidIndex() {
 }
 
 FULL_INDEX_TEMPLATE_ARGUMENTS
-void INDEXITERATOR_TYPE::LoadPageAndIterator(const page_id_t page_id) {
+void INDEXITERATOR_TYPE::LoadPageAndIterator(const page_id_t page_id, const std::optional<KeyType> &key) {
   page_id_ = page_id;
   if (page_id == INVALID_PAGE_ID) {
     return;
@@ -62,6 +62,20 @@ void INDEXITERATOR_TYPE::LoadPageAndIterator(const page_id_t page_id) {
   read_guard_ = bpm_->ReadPage(page_id);
   leaf_page_ = read_guard_.As<LeafPage>();
   key_index_ = 0;
+  if (key.has_value()) {
+    auto left = 0, right = leaf_page_->GetSize();
+    while (left < right) {
+      auto mid = left + (right - left) / 2;
+      auto cmp = comparator_(leaf_page_->KeyAt(mid), key.value());
+      if (cmp < 0) {
+        left = mid + 1;
+      } else {
+        right = mid;
+      }
+    }
+    key_index_ = left;
+  }
+
   tombstone_indices_set_.clear();
 
   auto indices = leaf_page_->GetIndexesInTombstones();
@@ -72,7 +86,7 @@ void INDEXITERATOR_TYPE::LoadPageAndIterator(const page_id_t page_id) {
   if (key_index_ >= leaf_page_->GetSize()) {
     // no keys in this leaf page is valid (all tombstone)
     // go to next sibling page
-    LoadPageAndIterator(leaf_page_->GetNextPageId());
+    LoadPageAndIterator(leaf_page_->GetNextPageId(), key);
   }
 }
 
@@ -91,7 +105,7 @@ auto INDEXITERATOR_TYPE::operator++() -> INDEXITERATOR_TYPE & {
   key_index_ += 1;
   FindAndSetValidIndex();
   if (key_index_ >= leaf_page_->GetSize()) {
-    LoadPageAndIterator(leaf_page_->GetNextPageId());
+    LoadPageAndIterator(leaf_page_->GetNextPageId(), std::nullopt);
   }
   return *this;
 }
