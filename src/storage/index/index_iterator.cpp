@@ -56,6 +56,7 @@ FULL_INDEX_TEMPLATE_ARGUMENTS
 void INDEXITERATOR_TYPE::LoadPageAndIterator(const page_id_t page_id, const std::optional<KeyType> &key) {
   page_id_ = page_id;
   if (page_id == INVALID_PAGE_ID) {
+    key_index_ = 0;
     return;
   }
 

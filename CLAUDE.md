@@ -122,6 +122,8 @@ Remove(key):
 | MergeTwoInternalPages missing SetSize | `dest_page->SetSize(n + src_page->GetSize())` | `b_plus_tree.cpp:768` |
 | Leaf merge not wired to parent cascade | Calls `RemoveKeyValueInInternalPage` after merge | `b_plus_tree.cpp:474-482` |
 | Merge overfull (size > max_size) | Evict tombstones after merge until `size <= max_size` | `b_plus_tree.cpp:639-642` |
+| Begin() erroneous `pop_front()` | Removed — header guard was never in `read_set_` | `b_plus_tree.cpp:804,840` |
+| Iterator end `key_index_` mismatch | Reset `key_index_ = 0` in `LoadPageAndIterator` when `INVALID_PAGE_ID` | `index_iterator.cpp:59` |
 
 ---
 
@@ -324,12 +326,12 @@ IndexIterator(shared_ptr<TracedBufferPoolManager> bpm, const KeyComparator& comp
 | `operator==` / `operator!=` | ✅ DONE |
 | `FindAndSetValidIndex()` | ✅ DONE |
 | `LoadPageAndIterator(page_id, key)` | ✅ DONE |
-| `Begin()` in BPlusTree | ✅ DONE (has bug — see below) |
-| `Begin(key)` in BPlusTree | ✅ DONE (has bug — see below) |
+| `Begin()` in BPlusTree | ✅ DONE |
+| `Begin(key)` in BPlusTree | ✅ DONE |
 | `End()` in BPlusTree | ✅ DONE |
 
 ### LoadPageAndIterator — Key logic
-1. If `page_id == INVALID_PAGE_ID` → return (end sentinel)
+1. If `page_id == INVALID_PAGE_ID` → reset `key_index_ = 0` and return (end sentinel)
 2. Read page, get leaf pointer
 3. If `key` has value → binary search (lower_bound: first index where `key_at(i) >= key`)
 4. Build tombstone index set
@@ -357,14 +359,12 @@ key_index_ = left;  // converged: first index where key_at(index) >= target
 
 **Begin()** (`b_plus_tree.cpp:789`):
 - Empty tree → return end sentinel
-- Traverse to leftmost leaf: always follow `ValueAt(0)` at each internal node
-- **BUG:** Line 804 does `ctx.read_set_.pop_front()` right after pushing the root guard — pops the only element, deque is empty, then `ctx.read_set_.back()` on line 807 crashes
+- Traverse to leftmost leaf: always follow `ValueAt(0)` at each internal node, pop parent after pushing child
 
-**Begin(key)** (`b_plus_tree.cpp:826`):
+**Begin(key)** (`b_plus_tree.cpp:825`):
 - Empty tree → return end sentinel
 - Uses `TraverseNodesToLeaf(ctx.read_set_, key, true)` to find leaf containing key
 - Passes `key` to iterator constructor for lower_bound positioning
-- **BUG:** Same `pop_front()` issue — line 840 pops the root guard, deque is empty when `TraverseNodesToLeaf` tries to read `back()`
 
 **End()** (`b_plus_tree.cpp:852`): Correct — returns `{bpm_, comparator_, INVALID_PAGE_ID, nullopt}`
 
@@ -379,8 +379,15 @@ key_index_ = left;  // converged: first index where key_at(index) >= target
 
 ---
 
+### Gotcha: `operator==` vs `IsEnd()` consistency
+- `operator==` compares both `page_id_` AND `key_index_`
+- `IsEnd()` only checks `page_id_ == INVALID_PAGE_ID`
+- When reaching end (via `operator++` → `LoadPageAndIterator(INVALID_PAGE_ID)`), `key_index_` must be reset to 0
+- Otherwise `operator!=` with `End()` returns true (stale `key_index_` != 0), but `IsEnd()` returns true → assertion in `operator*()`
+
+---
+
 ## Remaining TODOs
 
-1. **Task #3**: Fix `Begin()` and `Begin(key)` — remove erroneous `pop_front()` calls
-2. **Task #3**: Test iterator (`make b_plus_tree_iterator_test`)
-3. **Task #4: Concurrency Control** — optimistic latch crabbing (read down, write only on leaf)
+1. **Task #3**: Test iterator (`make b_plus_tree_iterator_test`)
+2. **Task #4: Concurrency Control** — optimistic latch crabbing (read down, write only on leaf)

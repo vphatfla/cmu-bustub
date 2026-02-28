@@ -801,7 +801,6 @@ auto BPLUSTREE_TYPE::Begin() -> INDEXITERATOR_TYPE {
 
   auto curr_guard = bpm_->ReadPage(ctx.root_page_id_);
   ctx.read_set_.emplace_back(std::move(curr_guard));
-  ctx.read_set_.pop_front();  // pop the header guard
 
   while (true) {
     auto curr_page = ctx.read_set_.back().As<BPlusTreePage>();
@@ -837,7 +836,6 @@ auto BPLUSTREE_TYPE::Begin(const KeyType &key) -> INDEXITERATOR_TYPE {
 
   auto curr_guard = bpm_->ReadPage(ctx.root_page_id_);
   ctx.read_set_.emplace_back(std::move(curr_guard));
-  ctx.read_set_.pop_front();  // pop the header guard
   TraverseNodesToLeaf(ctx.read_set_, key, true);
 
   return INDEXITERATOR_TYPE{bpm_, comparator_, ctx.read_set_.back().GetPageId(), key};
