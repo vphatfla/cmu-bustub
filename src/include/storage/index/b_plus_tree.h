@@ -147,7 +147,7 @@ class BPlusTree {
 
   /// @brief Push up the key and page id after split on INSERT
   /// This can be called after splitting of either LEAF or INTERNAL notes
-  void InsertToParent(const KeyType &key, const page_id_t page_id, Context &ctx);
+  void InsertToParent(const KeyType &key, page_id_t page_id, Context &ctx);
 
   /// @brief Insert the key/value to the leaf node, increase the node size
   /// Caller must ensure that there is space for this insertion
@@ -155,7 +155,7 @@ class BPlusTree {
 
   /// @brief Insert the key/value to the internal page, increase the node size
   /// Caller must ensure that there is space for this insertion
-  auto InsertKVToInternalPage(InternalPage *page, const KeyType &key, const page_id_t page_id) -> bool;
+  auto InsertKVToInternalPage(InternalPage *page, const KeyType &key, page_id_t page_id) -> bool;
 
   /// @brief Split the Leaf Page and set size for both old and new page, caller must ensure the condition to split is
   /// correct
@@ -189,7 +189,7 @@ class BPlusTree {
   /// @param parent_page: parent of both curr_page and sibling_page
   /// @param curr_child_index: is the index of curr_page in key_array of parent_page
   auto RedistributeInternalPageLeftSibling(InternalPage *curr_page, InternalPage *sibling_page,
-                                           InternalPage *parent_page, const int curr_child_index) -> bool;
+                                           InternalPage *parent_page, int curr_child_index) -> bool;
 
   /// @brief Redistribute the sibiling the the current internal page
   /// @param curr_page: page that is borrowing key and pointer
@@ -197,7 +197,7 @@ class BPlusTree {
   /// @param parent_page: parent of both curr_page and sibling_page
   /// @param curr_child_index: is the index of curr_page in key_array of parent_page
   auto RedistributeInternalPageRightSibling(InternalPage *curr_page, InternalPage *sibling_page,
-                                            InternalPage *parent_page, const int curr_child_index) -> bool;
+                                            InternalPage *parent_page, int curr_child_index) -> bool;
 
   /// @brief Merge src_page INTO dest_page (src_page entries are copied to dest_page)
   void MergeTwoLeafPages(LeafPage *dest_page, LeafPage *src_page);
@@ -208,7 +208,7 @@ class BPlusTree {
   /// @param parent_page: parent of both pages, this is needed to pull down the correct key for the dest_page when
   /// merging
   void MergeTwoInternalPages(InternalPage *dest_page, InternalPage *src_page, InternalPage *parent_page,
-                             const int right_child_index);
+                             int right_child_index);
   /// @brief Given a key, traverse all the way to the leaf node that contains the key
   /// @note Caller must push root guard onto guard_set before calling. For Insert, caller handles header page
   /// separately.
@@ -225,7 +225,8 @@ class BPlusTree {
       }
 
       auto curr_internal_page = guard_set.back().template As<InternalPage>();
-      auto left = 1, right = curr_internal_page->GetSize() - 1;
+      auto left = 1;
+      auto right = curr_internal_page->GetSize() - 1;
       while (left <= right) {
         auto mid = left + (right - left) / 2;
         if (comparator_(key, curr_internal_page->KeyAt(mid)) >= 0) {
@@ -249,11 +250,31 @@ class BPlusTree {
     }
   }
 
+  /// @brief: Optimisically traverse the tree to leaf
+  /// Only acquire and release read guard on the root and internal pages
+  /// @return: a WritePageGuard of the leaf page
+  auto OptimisticTraverseNode(std::deque<ReadPageGuard> &read_set, const KeyType &key) -> WritePageGuard;
+
   /// @brief Handle remove the Key and Value pair in InternalPage
   /// This is used during the merging of sibling children
   /// @param page: parent InternalPage pointer
   /// @param separator_index: index of key-value to remove
-  void RemoveKeyValueInInternalPage(Context &ctx, WritePageGuard guard, size_t separator_index);
+  void RemoveKeyValueInInternalPage(Context &ctx, WritePageGuard guard, size_t child_index);
+
+  /// @brief Insert Optimisically
+  /// Acquire Read Guard from header, root and internal pages
+  /// Acquire Write Guard on the leaf
+  /// @return bool - true if complete successfully
+  /// @return bool - false, insert failed because of key duplication, no permissive insert
+  /// @return nullopt - not enough size or root is a leaf page, insert must be done permissively
+  auto InsertOptimistic(const KeyType &key, const ValueType &value) -> std::optional<bool>;
+
+  /// @brief Remove Optimisically
+  /// Acquire Read Guard from header, root and internal pages
+  /// Acquire Write Guard on the leaf
+  /// @return bool - true if completed successfully
+  /// @return false - can not be done optimisitically
+  auto RemoveOptimistic(const KeyType &key) -> bool;
 };
 
 /**

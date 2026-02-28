@@ -65,11 +65,11 @@ class BPlusTreeInternalPage : public BPlusTreePage {
 
   auto ValueAt(int index) const -> ValueType;
 
-  void SetValueAt(const size_t index, const ValueType &value);
+  void SetValueAt(size_t index, const ValueType &value);
 
-  void ShiftKeyAndValueRight(const size_t index);
+  void ShiftKeyAndValueRight(size_t index);
 
-  void ShiftKeyAndValueLeft(const size_t index);
+  void ShiftKeyAndValueLeft(size_t index);
 
   /**
    * @brief For test only, return a string representing all keys in

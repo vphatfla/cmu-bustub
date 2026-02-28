@@ -39,7 +39,7 @@ class IndexIterator {
   // you may define your own constructor based on your member variables
   ~IndexIterator();  // NOLINT
 
-  IndexIterator(std::shared_ptr<TracedBufferPoolManager> bpm, const KeyComparator &comparator, const page_id_t page_id,
+  IndexIterator(std::shared_ptr<TracedBufferPoolManager> bpm, const KeyComparator &comparator, page_id_t page_id,
                 const std::optional<KeyType> &key);
 
   auto IsEnd() -> bool;
@@ -84,7 +84,7 @@ class IndexIterator {
 
   /// @brief load the iterator params
   /// this is needed since we might have to  "jump" to the new page
-  void LoadPageAndIterator(const page_id_t page_id, const std::optional<KeyType> &key);
+  void LoadPageAndIterator(page_id_t page_id, const std::optional<KeyType> &key);
 };
 
 }  // namespace bustub

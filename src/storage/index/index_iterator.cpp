@@ -37,14 +37,14 @@ INDEXITERATOR_TYPE::~IndexIterator() = default;  // NOLINT
 FULL_INDEX_TEMPLATE_ARGUMENTS
 INDEXITERATOR_TYPE::IndexIterator(std::shared_ptr<TracedBufferPoolManager> bpm, const KeyComparator &comparator,
                                   const page_id_t page_id, const std::optional<KeyType> &key)
-    : bpm_(bpm), comparator_(comparator), page_id_(page_id) {
+    : bpm_(std::move(bpm)), comparator_(comparator), page_id_(page_id) {
   LoadPageAndIterator(page_id_, key);
 }
 
 FULL_INDEX_TEMPLATE_ARGUMENTS
 void INDEXITERATOR_TYPE::FindAndSetValidIndex() {
   while (key_index_ < leaf_page_->GetSize()) {
-    if (tombstone_indices_set_.count(key_index_)) {
+    if (tombstone_indices_set_.count(key_index_) != 0) {
       key_index_ += 1;
     } else {
       break;
@@ -64,7 +64,8 @@ void INDEXITERATOR_TYPE::LoadPageAndIterator(const page_id_t page_id, const std:
   leaf_page_ = read_guard_.As<LeafPage>();
   key_index_ = 0;
   if (key.has_value()) {
-    auto left = 0, right = leaf_page_->GetSize();
+    auto left = 0;
+    auto right = leaf_page_->GetSize();
     while (left < right) {
       auto mid = left + (right - left) / 2;
       auto cmp = comparator_(leaf_page_->KeyAt(mid), key.value());

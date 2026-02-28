@@ -80,14 +80,14 @@ class BPlusTreeLeafPage : public BPlusTreePage {
   auto ValueAt(int index) const -> ValueType;
   void SetValueAt(int index, const ValueType &value);
 
-  void RemoveIndexFromTombstones(const size_t index);
+  void RemoveIndexFromTombstones(size_t index);
 
-  auto IsIndexInTombstones(const size_t index) const -> bool;
+  auto IsIndexInTombstones(size_t index) const -> bool;
 
-  void ShiftKeyAndValueRight(const size_t index);
+  void ShiftKeyAndValueRight(size_t index);
 
   /// @biref Shift the key and value to the left 1 unit, used in deletion of the key at index
-  void ShiftKeyAndValueLeft(const size_t index);
+  void ShiftKeyAndValueLeft(size_t index);
 
   /// @brief Return whether the leaf's tombstone is full
   auto IsTombstonesFull() const -> bool;
@@ -96,7 +96,7 @@ class BPlusTreeLeafPage : public BPlusTreePage {
   auto GetTombstonesSize() const -> size_t;
 
   /// @brief Add index to tombstone, increase the tombstone size
-  void AddIndexToTombstones(const size_t index);
+  void AddIndexToTombstones(size_t index);
 
   /// @brief Return all indexes in tombstones
   auto GetIndexesInTombstones() const -> std::vector<size_t>;

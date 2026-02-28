@@ -17,7 +17,7 @@
 | Task #1 | B+Tree Pages (Base, Internal, Leaf) | ✅ DONE |
 | Task #2 | B+Tree Operations (Insert, Delete, Search) | ✅ DONE |
 | Task #3 | Index Iterator | 🔄 IN PROGRESS |
-| Task #4 | Concurrency Control (latch crabbing) | TODO |
+| Task #4 | Concurrency Control (latch crabbing) | 🔄 IN PROGRESS |
 
 ---
 
@@ -387,7 +387,56 @@ key_index_ = left;  // converged: first index where key_at(index) >= target
 
 ---
 
+## Task #4: Concurrency Control - IN PROGRESS
+
+### Strategy: Optimistic Latch Crabbing
+1. **Optimistic path** (fast): Read-latch header → root → internals (crabbing). Write-latch only the leaf.
+   - If leaf operation is "safe" (insert: not full, delete: won't go underfull) → do it, done.
+   - If unsafe → release everything, fall back to pessimistic path.
+2. **Pessimistic path** (existing code): Write-latch from header all the way down to leaf.
+
+### Implementation Status
+| Component | Status |
+|-----------|--------|
+| `InsertOptimistic()` | ✅ DONE |
+| `OptimisticTraverseNode()` | ✅ DONE |
+| `RemoveOptimistic()` | TODO |
+| `GetValue()` latch crabbing | ✅ DONE (read-latch crabbing with `release_parent=true`) |
+| `Begin()` / `Begin(key)` latch crabbing | ✅ DONE (read-latch crabbing) |
+
+### InsertOptimistic Flow (`b_plus_tree.cpp:199`)
+1. Read-latch header, check empty tree → `nullopt` (pessimistic creates root)
+2. Read-latch root, check if root is leaf → `nullopt` (pessimistic handles single-leaf root)
+3. `OptimisticTraverseNode()`: read-latch down internals, write-latch the leaf
+4. Check `size < max_size` → insert and return `true`
+5. Otherwise → `nullopt` (triggers pessimistic split path)
+
+### OptimisticTraverseNode (`b_plus_tree.cpp:230`)
+- Binary search internal page (same as `TraverseNodesToLeaf`)
+- Read-latch child: if internal → push onto read_set, pop parent, recurse
+- If child is leaf: drop read guard on leaf, write-latch leaf, then drop parent read guard
+- **Gap safety**: Parent read latch is held during the read→write gap on the leaf, preventing structural changes (splits/merges require parent write latch)
+
+### Latch Ordering Rules (from spec)
+- Never acquire same read latch twice in a single thread (deadlock risk)
+- Release latches in order: header → root → internals → leaf (top-down)
+- No global latches allowed
+
+### Key Fixes
+| Bug | Fix |
+|-----|-----|
+| Empty tree returns `false` instead of `nullopt` | Changed to `return std::nullopt` so pessimistic path creates root |
+| Root-is-leaf not handled | Added `IsLeafPage()` check, returns `nullopt` |
+| Binary search `left < right` | Fixed to `left <= right` to match `TraverseNodesToLeaf` |
+
+### Test Expectations
+- **OptimisticInsertTest**: `reads > 0, writes == 1` (read traversal + 1 leaf write)
+- **OptimisticDeleteTest**: `reads > 0, writes == 1` (same pattern)
+
+---
+
 ## Remaining TODOs
 
 1. **Task #3**: Test iterator (`make b_plus_tree_iterator_test`)
-2. **Task #4: Concurrency Control** — optimistic latch crabbing (read down, write only on leaf)
+2. **Task #4**: Implement `RemoveOptimistic()` (same pattern as InsertOptimistic)
+3. **Task #4**: Run concurrent tests (`make b_plus_tree_concurrent_test`)
