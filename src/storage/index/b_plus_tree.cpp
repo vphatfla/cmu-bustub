@@ -188,6 +188,10 @@ auto BPLUSTREE_TYPE::Insert(const KeyType &key, const ValueType &value) -> bool 
     BUSTUB_ENSURE(rc, "Insert must usccess");
   }
 
+  // Drop leaf guards before recursing into InsertToParent to free buffer pool frames
+  leaf_guard.Drop();
+  new_leaf_guard.Drop();
+
   InsertToParent(pushed_up_key, new_leaf_id, ctx);
 
   // drop all guard
@@ -321,6 +325,11 @@ void BPLUSTREE_TYPE::InsertToParent(const KeyType &key, const page_id_t page_id,
     auto new_page = new_page_guard.template AsMut<InternalPage>();
     InsertKVToInternalPage(new_page, key, page_id);
   }
+
+  // Drop guards before recursing to free buffer pool frames
+  parent_guard.Drop();
+  new_page_guard.Drop();
+
   InsertToParent(pushed_up_key, new_page_id, ctx);
 }
 
@@ -553,10 +562,17 @@ void BPLUSTREE_TYPE::Remove(const KeyType &key) {
   if (left_guard_opt.has_value()) {
     auto left_sibling_page = left_guard_opt.value().template AsMut<LeafPage>();
     MergeTwoLeafPages(left_sibling_page, leaf_page);
+    // Drop guards before recursing to free buffer pool frames
+    leaf_guard.Drop();
+    left_guard_opt.reset();
+    right_guard_opt.reset();
     RemoveKeyValueInInternalPage(ctx, std::move(parent_guard), child_index);
   } else if (right_guard_opt.has_value()) {
     auto right_sibling_page = right_guard_opt.value().template AsMut<LeafPage>();
     MergeTwoLeafPages(leaf_page, right_sibling_page);
+    // Drop guards before recursing to free buffer pool frames
+    leaf_guard.Drop();
+    right_guard_opt.reset();
     RemoveKeyValueInInternalPage(ctx, std::move(parent_guard), child_index + 1);
   }
 }
@@ -828,11 +844,19 @@ void BPLUSTREE_TYPE::RemoveKeyValueInInternalPage(Context &ctx, WritePageGuard g
     auto left_sibling_page = left_sibling_guard.value().template AsMut<InternalPage>();
     auto right_child_index = parent_page->ValueIndex(guard.GetPageId());
     MergeTwoInternalPages(left_sibling_page, page, parent_page, right_child_index);
+    // Drop guards before recursing to free buffer pool frames
+    guard.Drop();
+    left_sibling_guard.reset();
+    right_sibling_guard.reset();
     RemoveKeyValueInInternalPage(ctx, std::move(parent_guard), right_child_index);
   } else if (right_sibling_guard.has_value()) {
     auto right_sibling_page = right_sibling_guard.value().template AsMut<InternalPage>();
     auto right_child_index = parent_page->ValueIndex(right_sibling_guard.value().GetPageId());
     MergeTwoInternalPages(page, right_sibling_page, parent_page, right_child_index);
+    // Drop guards before recursing to free buffer pool frames
+    guard.Drop();
+    right_sibling_guard.reset();
+    left_sibling_guard.reset();
     RemoveKeyValueInInternalPage(ctx, std::move(parent_guard), right_child_index);
   }
 }

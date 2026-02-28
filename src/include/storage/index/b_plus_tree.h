@@ -221,16 +221,31 @@ class BPlusTree {
     while (true) {
       auto curr_page = guard_set.back().template As<BPlusTreePage>();
 
+      if (curr_page->IsLeafPage()) {
+        if (is_insert && curr_page->GetSize() < curr_page->GetMaxSize()) {
+          while (guard_set.size() > 1) {
+            guard_set.pop_front();
+          }
+        } else if (!is_insert) {
+          // For delete: use logical size (physical - tombstones) for safe check
+          auto leaf_page = guard_set.back().template As<LeafPage>();
+          auto logical_size = leaf_page->GetSize() - static_cast<int>(leaf_page->GetTombstonesSize());
+          if (logical_size > leaf_page->GetMinSize()) {
+            while (guard_set.size() > 1) {
+              guard_set.pop_front();
+            }
+          }
+        }
+        return;
+      }
+
+      // Safe node check for internal pages only (no tombstones, physical size = logical size)
       if ( (is_insert && (curr_page->GetSize() < curr_page->GetMaxSize()))
                   || (!is_insert && (curr_page->GetSize() > curr_page->GetMinSize()))) {
 
         while (guard_set.size() > 1) {
             guard_set.pop_front();
         }
-      }
-
-      if (curr_page->IsLeafPage()) {
-        return;
       }
 
       auto curr_internal_page = guard_set.back().template As<InternalPage>();
