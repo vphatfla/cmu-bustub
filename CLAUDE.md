@@ -400,7 +400,7 @@ key_index_ = left;  // converged: first index where key_at(index) >= target
 |-----------|--------|
 | `InsertOptimistic()` | ✅ DONE |
 | `OptimisticTraverseNode()` | ✅ DONE |
-| `RemoveOptimistic()` | TODO |
+| `RemoveOptimistic()` | ✅ DONE |
 | `GetValue()` latch crabbing | ✅ DONE (read-latch crabbing with `release_parent=true`) |
 | `Begin()` / `Begin(key)` latch crabbing | ✅ DONE (read-latch crabbing) |
 
@@ -435,8 +435,41 @@ key_index_ = left;  // converged: first index where key_at(index) >= target
 
 ---
 
+## BUG: "CheckedWritePage failed to bring in page X" — Buffer Pool Exhaustion
+
+### Root Cause
+All buffer pool frames are pinned simultaneously, so `replacer_->Evict()` returns `nullopt`, `CheckedWritePage` returns `nullopt`, and `WritePage` calls `std::abort()`.
+
+### How It Happens
+- **Scale test**: 30-frame buffer pool, leaf_max_size=2, internal_max_size=3, 5000 keys
+- Tree depth ≈ 12-13 levels with these parameters
+- **Pessimistic Insert path**: `TraverseNodesToLeaf(ctx.write_set_, key, false)` holds write guards on ALL nodes from root to leaf without releasing parents → pins ~15 pages simultaneously
+- **Pessimistic Remove path** is WORSE: during merge cascading, `RemoveKeyValueInInternalPage` is recursive and accumulates pins:
+
+### Pin Leak Analysis — Remove Path (CRITICAL)
+
+**In `Remove()` (lines 530-561):**
+- `left_guard_opt` and `right_guard_opt` are both alive during merge
+- When merging left: `right_guard_opt` is still held (never dropped)
+- When merging right: `left_guard_opt` is still held (never dropped)
+- These unused sibling guards pin frames unnecessarily during `RemoveKeyValueInInternalPage` recursion
+
+**In `RemoveKeyValueInInternalPage()` (lines 810-836):**
+- Each recursive level holds: `guard` (current) + `parent_guard` (moved) + `left_sibling_guard` + `right_sibling_guard`
+- Unused sibling guards are NOT released before recursing
+- Pin accumulation: up to 3 extra pins per recursion level × tree depth
+- With depth 13: could pin 40+ pages, far exceeding 30-frame buffer pool
+
+### Fix Required
+1. **Remove()**: Drop unused sibling guard before calling `RemoveKeyValueInInternalPage`
+2. **RemoveKeyValueInInternalPage()**: Drop unused sibling guard before recursive call
+3. **Pessimistic Insert**: Consider releasing safe ancestors during traversal (node with `size < max_size - 1` won't split)
+
+---
+
 ## Remaining TODOs
 
 1. **Task #3**: Test iterator (`make b_plus_tree_iterator_test`)
-2. **Task #4**: Implement `RemoveOptimistic()` (same pattern as InsertOptimistic)
-3. **Task #4**: Run concurrent tests (`make b_plus_tree_concurrent_test`)
+2. **CRITICAL**: Fix pin leaks in Remove/RemoveKeyValueInInternalPage (drop unused sibling guards)
+3. **Task #4**: Consider safe-node releasing in pessimistic Insert traversal
+4. **Task #4**: Run concurrent tests (`make b_plus_tree_concurrent_test`)

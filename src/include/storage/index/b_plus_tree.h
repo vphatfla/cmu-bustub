@@ -26,6 +26,7 @@
 #include <cstddef>
 #include <deque>
 #include <filesystem>
+#include <ios>
 #include <iostream>
 #include <memory>
 #include <optional>
@@ -213,13 +214,21 @@ class BPlusTree {
   /// @note Caller must push root guard onto guard_set before calling. For Insert, caller handles header page
   /// separately.
   template <typename GuardType>
-  void TraverseNodesToLeaf(std::deque<GuardType> &guard_set, const KeyType &key, const bool release_parent) {
+  void TraverseNodesToLeaf(std::deque<GuardType> &guard_set, const KeyType &key, const bool release_parent, bool is_insert) {
     static_assert(std::is_same_v<GuardType, WritePageGuard> || std::is_same_v<GuardType, ReadPageGuard>,
                   "GuardType must be either WritePageGuard or ReadPageGuard");
 
     while (true) {
-      // Use As<> for read-only access during traversal (works for both guard types)
       auto curr_page = guard_set.back().template As<BPlusTreePage>();
+
+      if ( (is_insert && (curr_page->GetSize() < curr_page->GetMaxSize()))
+                  || (!is_insert && (curr_page->GetSize() > curr_page->GetMinSize()))) {
+
+        while (guard_set.size() > 1) {
+            guard_set.pop_front();
+        }
+      }
+
       if (curr_page->IsLeafPage()) {
         return;
       }
@@ -244,7 +253,7 @@ class BPlusTree {
         guard_set.emplace_back(bpm_->ReadPage(next_page_id));
       }
 
-      if (release_parent) {
+      if (release_parent && guard_set.size() > 1) {
         guard_set.pop_front();
       }
     }

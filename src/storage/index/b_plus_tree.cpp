@@ -85,7 +85,7 @@ auto BPLUSTREE_TYPE::GetValue(const KeyType &key, std::vector<ValueType> *result
   }
 
   // Fetch root and traverse to leaf, releasing parent guards along the way
-  TraverseNodesToLeaf(ctx.read_set_, key, true);
+  TraverseNodesToLeaf(ctx.read_set_, key, true, true);
 
   auto leaf_page = ctx.read_set_.back().As<LeafPage>();
   auto size = leaf_page->GetSize();
@@ -166,7 +166,7 @@ auto BPLUSTREE_TYPE::Insert(const KeyType &key, const ValueType &value) -> bool 
   } else {
     // Fetch root and traverse to leaf, keeping all guards for potential splits
     ctx.write_set_.emplace_back(bpm_->WritePage(header_page->root_page_id_));
-    TraverseNodesToLeaf(ctx.write_set_, key, false);
+    TraverseNodesToLeaf(ctx.write_set_, key, false, true);
   }
 
   auto leaf_guard = std::move(ctx.write_set_.back());
@@ -470,7 +470,7 @@ void BPLUSTREE_TYPE::Remove(const KeyType &key) {
     return;
   }
   ctx.write_set_.emplace_back(bpm_->WritePage(header_page->root_page_id_));
-  TraverseNodesToLeaf(ctx.write_set_, key, false);
+  TraverseNodesToLeaf(ctx.write_set_, key, false, false);
 
   auto leaf_guard = std::move(ctx.write_set_.back());
   ctx.write_set_.pop_back();
@@ -967,7 +967,7 @@ auto BPLUSTREE_TYPE::Begin(const KeyType &key) -> INDEXITERATOR_TYPE {
     ctx.read_set_.emplace_back(bpm_->ReadPage(ctx.root_page_id_));
   }
 
-  TraverseNodesToLeaf(ctx.read_set_, key, true);
+  TraverseNodesToLeaf(ctx.read_set_, key, true, true);
 
   return INDEXITERATOR_TYPE{bpm_, comparator_, ctx.read_set_.back().GetPageId(), key};
 }
