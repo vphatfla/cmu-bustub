@@ -173,16 +173,31 @@ auto BPLUSTREE_TYPE::Insert(const KeyType &key, const ValueType &value) -> bool 
   ctx.write_set_.pop_back();
 
   auto leaf_page = leaf_guard.AsMut<LeafPage>();
+
+  // Check for duplicate before anything else (concurrent insert may have added this key)
+  auto dup_pos = FindIndexOfKeyInLeafPage(leaf_page, key);
+  if (dup_pos.has_value()) {
+    if constexpr (LEAF_PAGE_TOMB_CNT > 0) {
+      if (leaf_page->IsIndexInTombstones(dup_pos.value())) {
+        leaf_page->SetValueAt(dup_pos.value(), value);
+        leaf_page->RemoveIndexFromTombstones(dup_pos.value());
+        return true;
+      }
+    }
+    return false;
+  }
+
   if (leaf_page->GetSize() < leaf_page->GetMaxSize()) {
     return InsertKVToLeafPage(leaf_page, key, value);
   }
+
   // split
   auto [pushed_up_key, new_leaf_guard, new_leaf_id] = SplitLeafPage(leaf_page);
 
   auto new_leaf_page = new_leaf_guard.template AsMut<LeafPage>();
   if (comparator_(new_leaf_page->KeyAt(0), key) > 0) {
     auto rc = InsertKVToLeafPage(leaf_page, key, value);
-    BUSTUB_ENSURE(rc, "Insert must usccess");
+    BUSTUB_ENSURE(rc, "Insert must success");
   } else {
     auto rc = InsertKVToLeafPage(new_leaf_page, key, value);
     BUSTUB_ENSURE(rc, "Insert must usccess");

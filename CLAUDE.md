@@ -124,6 +124,9 @@ Remove(key):
 | Merge overfull (size > max_size) | Evict tombstones after merge until `size <= max_size` | `b_plus_tree.cpp:639-642` |
 | Begin() erroneous `pop_front()` | Removed — header guard was never in `read_set_` | `b_plus_tree.cpp:804,840` |
 | Iterator end `key_index_` mismatch | Reset `key_index_ = 0` in `LoadPageAndIterator` when `INVALID_PAGE_ID` | `index_iterator.cpp:59` |
+| **Buffer pool exhaustion on insert** | `.Drop()` guards in `Insert()`/`InsertToParent()` before recursing | `b_plus_tree.cpp:191,324` |
+| **Buffer pool exhaustion on delete** | `.Drop()`/`.reset()` guards in `Remove()`/`RemoveKeyValueInInternalPage()` before recursing | `b_plus_tree.cpp:565,840` |
+| **TraverseNodesToLeaf leaf safe check wrong for delete** | Leaf safe check for delete must use logical size (physical - tombstones), not physical size | `b_plus_tree.h:224-233` |
 
 ---
 
@@ -435,41 +438,35 @@ key_index_ = left;  // converged: first index where key_at(index) >= target
 
 ---
 
-## BUG: "CheckedWritePage failed to bring in page X" — Buffer Pool Exhaustion
+## BUG (FIXED): Buffer Pool Exhaustion — Pin Accumulation During Cascading Splits/Merges
 
 ### Root Cause
-All buffer pool frames are pinned simultaneously, so `replacer_->Evict()` returns `nullopt`, `CheckedWritePage` returns `nullopt`, and `WritePage` calls `std::abort()`.
+During cascading splits (insert) or merges (delete), recursive calls in `InsertToParent` / `RemoveKeyValueInInternalPage` kept page guards alive on the call stack. Each recursion level added ~2 pinned frames that couldn't be evicted, eventually exhausting the 30-frame buffer pool → `std::abort()`.
 
-### How It Happens
-- **Scale test**: 30-frame buffer pool, leaf_max_size=2, internal_max_size=3, 5000 keys
-- Tree depth ≈ 12-13 levels with these parameters
-- **Pessimistic Insert path**: `TraverseNodesToLeaf(ctx.write_set_, key, false)` holds write guards on ALL nodes from root to leaf without releasing parents → pins ~15 pages simultaneously
-- **Pessimistic Remove path** is WORSE: during merge cascading, `RemoveKeyValueInInternalPage` is recursive and accumulates pins:
+### Fix: Early `.Drop()` Before Recursion
+- **`Insert()`**: Drop `leaf_guard` and `new_leaf_guard` before calling `InsertToParent()`
+- **`InsertToParent()`**: Drop `parent_guard` and `new_page_guard` before recursive call
+- **`Remove()`**: Drop `leaf_guard` and unused sibling guard (`.reset()`) before `RemoveKeyValueInInternalPage`
+- **`RemoveKeyValueInInternalPage()`**: Drop `guard` and unused sibling guard before recursive call
+- Safe because: pages are in final state after split/merge, and the grandparent write latch prevents other threads from reaching them
 
-### Pin Leak Analysis — Remove Path (CRITICAL)
+---
 
-**In `Remove()` (lines 530-561):**
-- `left_guard_opt` and `right_guard_opt` are both alive during merge
-- When merging left: `right_guard_opt` is still held (never dropped)
-- When merging right: `left_guard_opt` is still held (never dropped)
-- These unused sibling guards pin frames unnecessarily during `RemoveKeyValueInInternalPage` recursion
+## BUG (FIXED): TraverseNodesToLeaf Leaf Safe Check Wrong for Delete (Tombstones)
 
-**In `RemoveKeyValueInInternalPage()` (lines 810-836):**
-- Each recursive level holds: `guard` (current) + `parent_guard` (moved) + `left_sibling_guard` + `right_sibling_guard`
-- Unused sibling guards are NOT released before recursing
-- Pin accumulation: up to 3 extra pins per recursion level × tree depth
-- With depth 13: could pin 40+ pages, far exceeding 30-frame buffer pool
+### Root Cause
+`TraverseNodesToLeaf` applied the same safe-node check to ALL pages including leaves. For delete, the check was `GetSize() > GetMinSize()` using **physical size**. With tombstones, physical size != logical size. A leaf with physical size 3 but 2 tombstones (logical size 1) would pass the safe check and release all ancestors. After deletion, logical size dropped to 0 (underfull), but ancestors were already released → tree corruption (leaf treated as root).
 
-### Fix Required
-1. **Remove()**: Drop unused sibling guard before calling `RemoveKeyValueInInternalPage`
-2. **RemoveKeyValueInInternalPage()**: Drop unused sibling guard before recursive call
-3. **Pessimistic Insert**: Consider releasing safe ancestors during traversal (node with `size < max_size - 1` won't split)
+### Fix
+In `TraverseNodesToLeaf` (`b_plus_tree.h`), handle leaf page separately:
+- **Insert**: safe check uses physical size (correct — tombstones don't affect insert capacity)
+- **Delete**: safe check uses **logical size** (`GetSize() - GetTombstonesSize() > GetMinSize()`)
+- Internal nodes: unchanged (no tombstones, physical = logical)
 
 ---
 
 ## Remaining TODOs
 
 1. **Task #3**: Test iterator (`make b_plus_tree_iterator_test`)
-2. **CRITICAL**: Fix pin leaks in Remove/RemoveKeyValueInInternalPage (drop unused sibling guards)
-3. **Task #4**: Consider safe-node releasing in pessimistic Insert traversal
-4. **Task #4**: Run concurrent tests (`make b_plus_tree_concurrent_test`)
+2. **Task #4**: Run concurrent tests (`make b_plus_tree_concurrent_test`)
+3. Run `make format`, `make check-lint`, `make check-clang-tidy-p2` before submission
