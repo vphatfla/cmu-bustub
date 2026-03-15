@@ -30,6 +30,51 @@
 
 namespace bustub {
 
+// Debug helper: validate no duplicate child pointers in internal page
+static inline void ValidateInternalPage(const char *location, const void *page_ptr, int size,
+                                        const std::function<page_id_t(int)> &value_at) {
+  for (int i = 0; i < size; i++) {
+    for (int j = i + 1; j < size; j++) {
+      if (value_at(i) == value_at(j)) {
+        fprintf(stderr, "CORRUPTION at %s: ValueAt(%d) == ValueAt(%d) == %d, size=%d\n", location, i, j,
+                value_at(i), size);
+        std::abort();
+      }
+    }
+  }
+}
+
+// Debug: recursive tree validation — checks separator keys match children
+template <typename KT, typename VT, typename KC, int NT>
+void ValidateTreeHelper(TracedBufferPoolManager *tbpm, page_id_t page_id, const KC &cmp, const char *ctx_msg) {
+  auto guard = tbpm->ReadPage(page_id);
+  auto base = guard.template As<BPlusTreePage>();
+  if (base->IsLeafPage()) {
+    return;
+  }
+  using IP = BPlusTreeInternalPage<KT, page_id_t, KC>;
+  auto page = guard.template As<IP>();
+  for (int i = 1; i < page->GetSize(); i++) {
+    auto child_id = page->ValueAt(i);
+    auto child_guard = tbpm->ReadPage(child_id);
+    auto child_base = child_guard.template As<BPlusTreePage>();
+    if (child_base->IsLeafPage()) {
+      using LP = BPlusTreeLeafPage<KT, VT, KC, NT>;
+      auto leaf = child_guard.template As<LP>();
+      auto first_key = leaf->KeyAt(0);
+      if (cmp(page->KeyAt(i), first_key) != 0) {
+        fprintf(stderr, "SEPARATOR BUG [%s]: page %d, KeyAt(%d)=%lld but child %d first_key=%lld\n", ctx_msg, page_id,
+                i, page->KeyAt(i).ToString(), child_id, first_key.ToString());
+        std::abort();
+      }
+    } else {
+      // Internal child — recurse
+      child_guard.Drop();
+      ValidateTreeHelper<KT, VT, KC, NT>(tbpm, child_id, cmp, ctx_msg);
+    }
+  }
+}
+
 FULL_INDEX_TEMPLATE_ARGUMENTS
 BPLUSTREE_TYPE::BPlusTree(std::string name, page_id_t header_page_id, BufferPoolManager *buffer_pool_manager,
                           const KeyComparator &comparator, int leaf_max_size, int internal_max_size)
@@ -138,10 +183,11 @@ auto BPLUSTREE_TYPE::GetValue(const KeyType &key, std::vector<ValueType> *result
  */
 FULL_INDEX_TEMPLATE_ARGUMENTS
 auto BPLUSTREE_TYPE::Insert(const KeyType &key, const ValueType &value) -> bool {
-  auto optimisitc_result = InsertOptimistic(key, value);
-  if (optimisitc_result.has_value()) {
-    return optimisitc_result.value();
-  }
+  // TEMPORARILY DISABLED for debugging
+  // auto optimisitc_result = InsertOptimistic(key, value);
+  // if (optimisitc_result.has_value()) {
+  //   return optimisitc_result.value();
+  // }
 
   // ==== Permisive Insert Path ===
   Context ctx;
@@ -212,6 +258,19 @@ auto BPLUSTREE_TYPE::Insert(const KeyType &key, const ValueType &value) -> bool 
   // drop all guard
   ctx.header_page_ = std::nullopt;
   DrainQueueUntilSize(ctx.write_set_, 0);
+
+  // DEBUG: Validate tree after insert (only safe with pessimistic-only, all locks released)
+  {
+    ReadPageGuard hg = bpm_->ReadPage(header_page_id_);
+    auto hp = hg.As<BPlusTreeHeaderPage>();
+    auto root_id = hp->root_page_id_;
+    hg.Drop();
+    if (root_id != INVALID_PAGE_ID) {
+      ValidateTreeHelper<KeyType, ValueType, KeyComparator, NumTombs>(bpm_.get(), root_id, comparator_,
+                                                                      "after_insert");
+    }
+  }
+
   return true;
 }
 
@@ -219,16 +278,15 @@ FULL_INDEX_TEMPLATE_ARGUMENTS
 auto BPLUSTREE_TYPE::InsertOptimistic(const KeyType &key, const ValueType &value) -> std::optional<bool> {
   auto ctx = Context{};
 
-  {
-    ReadPageGuard header_guard = bpm_->ReadPage(header_page_id_);
-    auto header_page = header_guard.As<BPlusTreeHeaderPage>();
-    if (header_page->root_page_id_ == INVALID_PAGE_ID) {
-      return std::nullopt;
-    }
-    ctx.root_page_id_ = header_page->root_page_id_;
-    // Must hold the read latch on the root page before release the header page
-    ctx.read_set_.emplace_back(bpm_->ReadPage(ctx.root_page_id_));
+  // Keep header read-locked for the entire optimistic operation to prevent
+  // concurrent pessimistic ops from modifying tree structure (root splits, etc.)
+  ReadPageGuard header_guard = bpm_->ReadPage(header_page_id_);
+  auto header_page = header_guard.As<BPlusTreeHeaderPage>();
+  if (header_page->root_page_id_ == INVALID_PAGE_ID) {
+    return std::nullopt;
   }
+  ctx.root_page_id_ = header_page->root_page_id_;
+  ctx.read_set_.emplace_back(bpm_->ReadPage(ctx.root_page_id_));
 
   // check if root is a leaf
   auto generic_root_page = ctx.read_set_.back().As<BPlusTreePage>();
@@ -237,6 +295,13 @@ auto BPLUSTREE_TYPE::InsertOptimistic(const KeyType &key, const ValueType &value
   }
 
   auto leaf_write_guard = OptimisticTraverseNode(ctx.read_set_, key);
+
+  // Verify leaf is still valid (could have been merged away by concurrent pessimistic op)
+  auto generic_page = leaf_write_guard.template As<BPlusTreePage>();
+  if (!generic_page->IsLeafPage()) {
+    return std::nullopt;  // page was merged away, fall back to pessimistic
+  }
+
   auto leaf_page = leaf_write_guard.template AsMut<LeafPage>();
 
   if (leaf_page->GetSize() < leaf_page->GetMaxSize()) {
@@ -273,7 +338,9 @@ auto BPLUSTREE_TYPE::OptimisticTraverseNode(std::deque<ReadPageGuard> &read_set,
     }
   }
   WritePageGuard child_write_guard = bpm_->WritePage(child_page_id);
-  read_set.pop_front();
+  // Keep parent read-locked until the optimistic operation completes.
+  // This prevents concurrent splits/merges on this leaf (they require parent write lock).
+  // The parent read lock is released when ctx goes out of scope in the caller.
   return child_write_guard;
 }
 
@@ -319,6 +386,8 @@ void BPLUSTREE_TYPE::InsertToParent(const KeyType &key, const page_id_t page_id,
     new_root_page->SetKeyAt(1, key);
     new_root_page->SetValueAt(0, old_root_id);
     new_root_page->SetValueAt(1, page_id);
+    ValidateInternalPage("InsertToParent:new_root", new_root_page, 2,
+                         [new_root_page](int i) { return new_root_page->ValueAt(i); });
     return;
   }
 
@@ -380,6 +449,8 @@ auto BPLUSTREE_TYPE::InsertKVToInternalPage(InternalPage *page, const KeyType &k
   page->SetKeyAt(index_pos, key);
   page->SetValueAt(index_pos, page_id);
   page->SetSize(page->GetSize() + 1);
+  ValidateInternalPage("InsertKVToInternalPage", page, page->GetSize(),
+                       [page](int i) { return page->ValueAt(i); });
   return true;
 }
 
@@ -475,9 +546,10 @@ auto BPLUSTREE_TYPE::CreateNewRootAndUpdateHeader(Context &ctx) -> std::pair<Wri
  */
 FULL_INDEX_TEMPLATE_ARGUMENTS
 void BPLUSTREE_TYPE::Remove(const KeyType &key) {
-  if (RemoveOptimistic(key)) {
-    return;
-  }
+  // TEMPORARILY DISABLED for debugging
+  // if (RemoveOptimistic(key)) {
+  //   return;
+  // }
 
   /// ==== Permissive Remove Path ====
   // Declaration of context instance.
@@ -502,7 +574,18 @@ void BPLUSTREE_TYPE::Remove(const KeyType &key) {
   auto pos = FindIndexOfKeyInLeafPage(leaf_page, key);
 
   if (!pos.has_value()) {
-    // key does not exist in leaf page
+    // Verify: is the key ACTUALLY gone, or did we traverse to the wrong leaf?
+    // Check if key is within the leaf's key range
+    if (leaf_page->GetSize() > 0) {
+      auto first_key = leaf_page->KeyAt(0);
+      auto last_key = leaf_page->KeyAt(leaf_page->GetSize() - 1);
+      if (comparator_(key, first_key) >= 0 && comparator_(key, last_key) <= 0) {
+        // Key is within range but not found — might be OK (tombstoned or deleted)
+      } else {
+        fprintf(stderr, "TRAVERSAL BUG: key not in leaf range. key=%lld, leaf_range=[%lld, %lld], leaf_size=%d\n",
+                key.ToString(), first_key.ToString(), last_key.ToString(), leaf_page->GetSize());
+      }
+    }
     return;
   }
 
@@ -549,6 +632,8 @@ void BPLUSTREE_TYPE::Remove(const KeyType &key) {
   auto parent_page = parent_guard.AsMut<InternalPage>();
 
   auto child_index = parent_page->ValueIndex(leaf_guard.GetPageId());
+  BUSTUB_ENSURE(parent_page->ValueAt(child_index) == leaf_guard.GetPageId(),
+                "ValueIndex returned wrong index for leaf page");
 
   // Try redistribute from left sibling
   auto left_guard_opt = GetLeftSiblingPage(parent_page, child_index);
@@ -562,6 +647,15 @@ void BPLUSTREE_TYPE::Remove(const KeyType &key) {
   }
 
   // Try redistribute from right sibling
+  // Debug: verify right sibling is not the same page as current leaf
+  if (child_index < parent_page->GetSize() - 1) {
+    auto right_id = parent_page->ValueAt(child_index + 1);
+    BUSTUB_ENSURE(right_id != leaf_guard.GetPageId(), "Right sibling is same page as leaf - tree corruption");
+    if (left_guard_opt.has_value()) {
+      BUSTUB_ENSURE(right_id != left_guard_opt.value().GetPageId(),
+                    "Right sibling is same page as left sibling - tree corruption");
+    }
+  }
   auto right_guard_opt = GetRightSiblingPage(parent_page, child_index);
   if (right_guard_opt.has_value()) {
     auto right_sibling_page = right_guard_opt.value().template AsMut<LeafPage>();
@@ -577,6 +671,8 @@ void BPLUSTREE_TYPE::Remove(const KeyType &key) {
   if (left_guard_opt.has_value()) {
     auto left_sibling_page = left_guard_opt.value().template AsMut<LeafPage>();
     MergeTwoLeafPages(left_sibling_page, leaf_page);
+    // Mark dead page as invalid so optimistic paths can detect it
+    leaf_page->SetPageType(IndexPageType::INVALID_INDEX_PAGE);
     // Drop guards before recursing to free buffer pool frames
     leaf_guard.Drop();
     left_guard_opt.reset();
@@ -585,10 +681,23 @@ void BPLUSTREE_TYPE::Remove(const KeyType &key) {
   } else if (right_guard_opt.has_value()) {
     auto right_sibling_page = right_guard_opt.value().template AsMut<LeafPage>();
     MergeTwoLeafPages(leaf_page, right_sibling_page);
+    // Mark dead page as invalid so optimistic paths can detect it
+    right_sibling_page->SetPageType(IndexPageType::INVALID_INDEX_PAGE);
     // Drop guards before recursing to free buffer pool frames
     leaf_guard.Drop();
     right_guard_opt.reset();
     RemoveKeyValueInInternalPage(ctx, std::move(parent_guard), child_index + 1);
+  }
+
+  // DEBUG: Validate tree after remove (only safe with pessimistic-only, all locks released)
+  {
+    ReadPageGuard hg = bpm_->ReadPage(header_page_id_);
+    auto hp = hg.As<BPlusTreeHeaderPage>();
+    auto root_id = hp->root_page_id_;
+    hg.Drop();
+    if (root_id != INVALID_PAGE_ID) {
+      ValidateTreeHelper<KeyType, ValueType, KeyComparator, NumTombs>(bpm_.get(), root_id, comparator_, "after_remove");
+    }
   }
 }
 
@@ -596,16 +705,15 @@ FULL_INDEX_TEMPLATE_ARGUMENTS
 auto BPLUSTREE_TYPE::RemoveOptimistic(const KeyType &key) -> bool {
   auto ctx = Context{};
 
-  {
-    ReadPageGuard header_guard = bpm_->ReadPage(header_page_id_);
-    auto header_page = header_guard.As<BPlusTreeHeaderPage>();
-    if (header_page->root_page_id_ == INVALID_PAGE_ID) {
-      return true;
-    }
-    ctx.root_page_id_ = header_page->root_page_id_;
-    // Must hold the read latch on the root page before release the header page
-    ctx.read_set_.emplace_back(bpm_->ReadPage(ctx.root_page_id_));
+  // Keep header read-locked for the entire optimistic operation to prevent
+  // concurrent pessimistic ops from modifying tree structure (root splits, etc.)
+  ReadPageGuard header_guard = bpm_->ReadPage(header_page_id_);
+  auto header_page = header_guard.As<BPlusTreeHeaderPage>();
+  if (header_page->root_page_id_ == INVALID_PAGE_ID) {
+    return true;
   }
+  ctx.root_page_id_ = header_page->root_page_id_;
+  ctx.read_set_.emplace_back(bpm_->ReadPage(ctx.root_page_id_));
 
   // check if root is a leaf
   auto generic_root_page = ctx.read_set_.back().As<BPlusTreePage>();
@@ -614,6 +722,13 @@ auto BPLUSTREE_TYPE::RemoveOptimistic(const KeyType &key) -> bool {
   }
 
   auto leaf_write_guard = OptimisticTraverseNode(ctx.read_set_, key);
+
+  // Verify leaf is still valid (could have been merged away by concurrent pessimistic op)
+  auto generic_page = leaf_write_guard.template As<BPlusTreePage>();
+  if (!generic_page->IsLeafPage()) {
+    return false;  // page was merged away, fall back to pessimistic
+  }
+
   auto leaf_page = leaf_write_guard.template AsMut<LeafPage>();
 
   auto pos = FindIndexOfKeyInLeafPage(leaf_page, key);
@@ -697,6 +812,11 @@ auto BPLUSTREE_TYPE::RedistributeLeafPageLeftSibling(LeafPage *curr_page, LeafPa
   auto sibling_index = sibling_page->GetSize() - 1;
   while (curr_logical_size < curr_min_required_size &&
          (sibling_page->GetSize() - sibling_page->GetTombstonesSize()) > sibling_min_required_size) {
+    // Evict tombstones if curr_page is physically full (no room to shift right)
+    while (curr_page->GetSize() >= curr_page->GetMaxSize() && curr_page->GetTombstonesSize() > 0) {
+      curr_page->DeleteOldestKeyInTombstones();
+    }
+
     auto key = sibling_page->KeyAt(sibling_index);
     auto value = sibling_page->ValueAt(sibling_index);
     curr_page->ShiftKeyAndValueRight(0);
@@ -815,6 +935,8 @@ void BPLUSTREE_TYPE::RemoveKeyValueInInternalPage(Context &ctx, WritePageGuard g
   // ShiftKeyAndValueLeft(i) removes entry at index i; child_index IS the entry to remove
   page->ShiftKeyAndValueLeft(child_index);
   page->SetSize(page->GetSize() - 1);
+  ValidateInternalPage("RemoveKeyValueInInternalPage:after_shift", page, page->GetSize(),
+                       [page](int i) { return page->ValueAt(i); });
 
   if (page->GetSize() >= page->GetMinSize()) {
     // internal page is sufficient
@@ -859,6 +981,8 @@ void BPLUSTREE_TYPE::RemoveKeyValueInInternalPage(Context &ctx, WritePageGuard g
     auto left_sibling_page = left_sibling_guard.value().template AsMut<InternalPage>();
     auto right_child_index = parent_page->ValueIndex(guard.GetPageId());
     MergeTwoInternalPages(left_sibling_page, page, parent_page, right_child_index);
+    // Mark dead page as invalid so optimistic paths can detect stale traversal
+    page->SetPageType(IndexPageType::INVALID_INDEX_PAGE);
     // Drop guards before recursing to free buffer pool frames
     guard.Drop();
     left_sibling_guard.reset();
@@ -868,6 +992,8 @@ void BPLUSTREE_TYPE::RemoveKeyValueInInternalPage(Context &ctx, WritePageGuard g
     auto right_sibling_page = right_sibling_guard.value().template AsMut<InternalPage>();
     auto right_child_index = parent_page->ValueIndex(right_sibling_guard.value().GetPageId());
     MergeTwoInternalPages(page, right_sibling_page, parent_page, right_child_index);
+    // Mark dead page as invalid
+    right_sibling_page->SetPageType(IndexPageType::INVALID_INDEX_PAGE);
     // Drop guards before recursing to free buffer pool frames
     guard.Drop();
     right_sibling_guard.reset();
@@ -885,19 +1011,23 @@ auto BPLUSTREE_TYPE::RedistributeInternalPageLeftSibling(InternalPage *curr_page
   }
 
   auto n = sibling_page->GetSize();
-  // shift right in the current page
-  curr_page->ShiftKeyAndValueRight(1);
-  // pull the key from parent page
+  // shift right ALL entries in the current page (including value[0])
+  curr_page->ShiftKeyAndValueRight(0);
+  // pull the separator key from parent page into key[1]
   curr_page->SetKeyAt(1, parent_page->KeyAt(curr_child_index));
-  // borrow the pointer from sibiling
+  // borrow the rightmost pointer from sibling into value[0]
   curr_page->SetValueAt(0, sibling_page->ValueAt(n - 1));
-  // push the key up from sibling page
+  // push the sibling's rightmost key up to parent as new separator
   parent_page->SetKeyAt(curr_child_index, sibling_page->KeyAt(n - 1));
 
   // decrease k-v count from sibling page, shoudn't have to physicially delete
   sibling_page->SetSize(n - 1);
   // increase curr page size
   curr_page->SetSize(curr_page->GetSize() + 1);
+  ValidateInternalPage("RedistributeInternalLeft:curr", curr_page, curr_page->GetSize(),
+                       [curr_page](int i) { return curr_page->ValueAt(i); });
+  ValidateInternalPage("RedistributeInternalLeft:sibling", sibling_page, sibling_page->GetSize(),
+                       [sibling_page](int i) { return sibling_page->ValueAt(i); });
   return true;
 }
 
@@ -924,6 +1054,10 @@ auto BPLUSTREE_TYPE::RedistributeInternalPageRightSibling(InternalPage *curr_pag
   // adjust size
   sibling_page->SetSize(sibling_page->GetSize() - 1);
   curr_page->SetSize(n + 1);
+  ValidateInternalPage("RedistributeInternalRight:curr", curr_page, curr_page->GetSize(),
+                       [curr_page](int i) { return curr_page->ValueAt(i); });
+  ValidateInternalPage("RedistributeInternalRight:sibling", sibling_page, sibling_page->GetSize(),
+                       [sibling_page](int i) { return sibling_page->ValueAt(i); });
   return true;
 }
 
@@ -944,6 +1078,8 @@ void BPLUSTREE_TYPE::MergeTwoInternalPages(InternalPage *dest_page, InternalPage
   }
 
   dest_page->SetSize(n + src_page->GetSize());
+  ValidateInternalPage("MergeTwoInternalPages:dest", dest_page, dest_page->GetSize(),
+                       [dest_page](int i) { return dest_page->ValueAt(i); });
 }
 /*****************************************************************************
  * INDEX ITERATOR
@@ -965,7 +1101,7 @@ auto BPLUSTREE_TYPE::Begin() -> INDEXITERATOR_TYPE {
     auto header_page = header_guard.As<BPlusTreeHeaderPage>();
 
     if (header_page->root_page_id_ == INVALID_PAGE_ID) {
-      return INDEXITERATOR_TYPE{bpm_, comparator_, INVALID_PAGE_ID, std::nullopt};
+      return INDEXITERATOR_TYPE{bpm_, comparator_, ReadPageGuard{}, INVALID_PAGE_ID, std::nullopt};
     }
     ctx.root_page_id_ = header_page->root_page_id_;
     // Must hold the read latch on the root page before release the header page
@@ -983,7 +1119,8 @@ auto BPLUSTREE_TYPE::Begin() -> INDEXITERATOR_TYPE {
     ctx.read_set_.pop_front();
   }
 
-  return INDEXITERATOR_TYPE{bpm_, comparator_, ctx.read_set_.back().GetPageId(), std::nullopt};
+  auto page_id = ctx.read_set_.back().GetPageId();
+  return INDEXITERATOR_TYPE{bpm_, comparator_, std::move(ctx.read_set_.back()), page_id, std::nullopt};
 }
 
 /**
@@ -999,7 +1136,7 @@ auto BPLUSTREE_TYPE::Begin(const KeyType &key) -> INDEXITERATOR_TYPE {
     auto header_page = header_guard.As<BPlusTreeHeaderPage>();
 
     if (header_page->root_page_id_ == INVALID_PAGE_ID) {
-      return INDEXITERATOR_TYPE{bpm_, comparator_, INVALID_PAGE_ID, std::nullopt};
+      return INDEXITERATOR_TYPE{bpm_, comparator_, ReadPageGuard{}, INVALID_PAGE_ID, std::nullopt};
     }
     ctx.root_page_id_ = header_page->root_page_id_;
     // Must hold the read latch on the root page before release the header page
@@ -1008,7 +1145,8 @@ auto BPLUSTREE_TYPE::Begin(const KeyType &key) -> INDEXITERATOR_TYPE {
 
   TraverseNodesToLeaf(ctx.read_set_, key, true, true);
 
-  return INDEXITERATOR_TYPE{bpm_, comparator_, ctx.read_set_.back().GetPageId(), key};
+  auto page_id = ctx.read_set_.back().GetPageId();
+  return INDEXITERATOR_TYPE{bpm_, comparator_, std::move(ctx.read_set_.back()), page_id, key};
 }
 
 /**
@@ -1018,7 +1156,7 @@ auto BPLUSTREE_TYPE::Begin(const KeyType &key) -> INDEXITERATOR_TYPE {
  */
 FULL_INDEX_TEMPLATE_ARGUMENTS
 auto BPLUSTREE_TYPE::End() -> INDEXITERATOR_TYPE {
-  return INDEXITERATOR_TYPE{bpm_, comparator_, INVALID_PAGE_ID, std::nullopt};
+  return INDEXITERATOR_TYPE{bpm_, comparator_, ReadPageGuard{}, INVALID_PAGE_ID, std::nullopt};
 }
 
 /**
