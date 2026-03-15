@@ -102,10 +102,9 @@ Remove(key):
 - Combined physical size can exceed `max_size` due to tombstoned entries
 - **Fixed** at `b_plus_tree.cpp:639-642`: after tombstone rebuild, evict until `size <= max_size`
 
-### OptimisticDeleteTest — Expected failure (Task #4 not done)
+### OptimisticDeleteTest — ✅ DONE (Task #4 complete)
 - Test expects read latches during traversal (optimistic latch crabbing)
-- Current Remove() uses WritePage for all traversal → 0 reads, N writes
-- Will pass after Task #4 implementation
+- `RemoveOptimistic()` uses read-latch traversal + write-latch only on leaf
 
 ---
 
@@ -127,6 +126,8 @@ Remove(key):
 | **Buffer pool exhaustion on insert** | `.Drop()` guards in `Insert()`/`InsertToParent()` before recursing | `b_plus_tree.cpp:191,324` |
 | **Buffer pool exhaustion on delete** | `.Drop()`/`.reset()` guards in `Remove()`/`RemoveKeyValueInInternalPage()` before recursing | `b_plus_tree.cpp:565,840` |
 | **TraverseNodesToLeaf leaf safe check wrong for delete** | Leaf safe check for delete must use logical size (physical - tombstones), not physical size | `b_plus_tree.h:224-233` |
+| **Iterator deadlock on construction** | Constructor now takes `ReadPageGuard leaf_guard` (moved from caller) instead of calling `bpm_->ReadPage()` internally, which would double read-latch the same page | `index_iterator.cpp:38-75` |
+| **LoadPageAndIterator stack overflow** | Changed from recursive to iterative `while (true)` loop when following sibling chain of fully-tombstoned pages | `index_iterator.cpp:89-127` |
 
 ---
 
@@ -303,9 +304,10 @@ make check-clang-tidy-p2
 ### Iterator Constructor (current signature)
 ```cpp
 IndexIterator(shared_ptr<TracedBufferPoolManager> bpm, const KeyComparator& comparator,
-              page_id_t page_id, const optional<KeyType>& key);
+              ReadPageGuard leaf_guard, page_id_t page_id, const optional<KeyType>& key);
 ```
-- No default constructor — end sentinel is constructed with `INVALID_PAGE_ID`
+- Takes a `ReadPageGuard` directly from the caller (moved in) — avoids double read-latch deadlock
+- No default constructor — end sentinel is constructed with `ReadPageGuard{}` + `INVALID_PAGE_ID`
 - `key` param: if `nullopt`, starts at index 0; if provided, binary searches for lower_bound position
 - Uses `TracedBufferPoolManager` (not plain `BufferPoolManager`)
 
@@ -321,7 +323,7 @@ IndexIterator(shared_ptr<TracedBufferPoolManager> bpm, const KeyComparator& comp
 ### Implementation Status
 | Method | Status |
 |--------|--------|
-| `IndexIterator(bpm, comparator, page_id, key)` | ✅ DONE |
+| `IndexIterator(bpm, comparator, leaf_guard, page_id, key)` | ✅ DONE |
 | `~IndexIterator()` | ✅ DONE (default) |
 | `IsEnd()` | ✅ DONE |
 | `operator*()` | ✅ DONE |
@@ -333,13 +335,15 @@ IndexIterator(shared_ptr<TracedBufferPoolManager> bpm, const KeyComparator& comp
 | `Begin(key)` in BPlusTree | ✅ DONE |
 | `End()` in BPlusTree | ✅ DONE |
 
-### LoadPageAndIterator — Key logic
+### LoadPageAndIterator — Key logic (iterative, not recursive)
+Uses `while (true)` loop instead of recursion to follow sibling chains:
 1. If `page_id == INVALID_PAGE_ID` → reset `key_index_ = 0` and return (end sentinel)
-2. Read page, get leaf pointer
+2. Read page via `bpm_->ReadPage(page_id)`, get leaf pointer
 3. If `key` has value → binary search (lower_bound: first index where `key_at(i) >= key`)
 4. Build tombstone index set
 5. `FindAndSetValidIndex()` — skip tombstoned indices forward
-6. If `key_index_ >= size` → recurse to `next_page_id` (all entries tombstoned or past end)
+6. If `key_index_ < size` → return (found valid entry)
+7. Otherwise → set `page_id = next_page_id` and loop (all entries tombstoned or past end)
 
 ### Binary Search in LoadPageAndIterator — Lower bound pattern
 ```cpp
@@ -360,21 +364,22 @@ key_index_ = left;  // converged: first index where key_at(index) >= target
 
 ### Begin() / Begin(key) / End() in BPlusTree
 
-**Begin()** (`b_plus_tree.cpp:789`):
-- Empty tree → return end sentinel
+**Begin()** (`b_plus_tree.cpp:966`):
+- Empty tree → return end sentinel `{bpm_, comparator_, ReadPageGuard{}, INVALID_PAGE_ID, nullopt}`
 - Traverse to leftmost leaf: always follow `ValueAt(0)` at each internal node, pop parent after pushing child
+- Passes `std::move(ctx.read_set_.back())` as `leaf_guard` to iterator constructor (avoids double-latch)
 
-**Begin(key)** (`b_plus_tree.cpp:825`):
+**Begin(key)** (`b_plus_tree.cpp:1002`):
 - Empty tree → return end sentinel
-- Uses `TraverseNodesToLeaf(ctx.read_set_, key, true)` to find leaf containing key
-- Passes `key` to iterator constructor for lower_bound positioning
+- Uses `TraverseNodesToLeaf(ctx.read_set_, key, true, true)` to find leaf containing key
+- Passes `std::move(ctx.read_set_.back())` as `leaf_guard` and `key` to iterator constructor
 
-**End()** (`b_plus_tree.cpp:852`): Correct — returns `{bpm_, comparator_, INVALID_PAGE_ID, nullopt}`
+**End()** (`b_plus_tree.cpp:1028`): Returns `{bpm_, comparator_, ReadPageGuard{}, INVALID_PAGE_ID, nullopt}`
 
 ### Key Decisions
 - **Tombstone skipping by index**: Uses `unordered_set<size_t>` of tombstoned indices (from `GetIndexesInTombstones()`), not keys — avoids `GenericKey` hash/comparator issues
 - **FindAndSetValidIndex()**: Skips consecutive tombstoned indices starting from current `key_index_`
-- **LoadPageAndIterator()**: Recursively follows `next_page_id_` if all entries on a page are tombstoned
+- **LoadPageAndIterator()**: Iteratively follows `next_page_id_` via `while (true)` loop if all entries on a page are tombstoned
 - **operator==**: Compares `page_id_` and `key_index_` (position equality, not object identity)
 - **operator!=**: Simply `!(*this == itr)`
 - **Begin(key) with tombstoned key**: Iterator automatically skips to next valid entry (lower_bound on logical keys)
@@ -462,6 +467,36 @@ In `TraverseNodesToLeaf` (`b_plus_tree.h`), handle leaf page separately:
 - **Insert**: safe check uses physical size (correct — tombstones don't affect insert capacity)
 - **Delete**: safe check uses **logical size** (`GetSize() - GetTombstonesSize() > GetMinSize()`)
 - Internal nodes: unchanged (no tombstones, physical = logical)
+
+---
+
+## BUG (FIXED): Iterator Constructor Deadlock — Double Read-Latch
+
+### Root Cause
+`Begin()` and `Begin(key)` in `BPlusTree` held a `ReadPageGuard` on the leaf page (from traversal), then passed just the `page_id` to the `IndexIterator` constructor. The constructor called `bpm_->ReadPage(page_id)` internally, attempting to acquire a **second** read latch on the same page in the same thread → deadlock (BusTub's read latches are not reentrant).
+
+### Fix
+Changed the iterator constructor signature to accept a `ReadPageGuard leaf_guard` parameter (moved in):
+```cpp
+IndexIterator(shared_ptr<TracedBufferPoolManager> bpm, const KeyComparator& comparator,
+              ReadPageGuard leaf_guard, page_id_t page_id, const optional<KeyType>& key);
+```
+- `Begin()` / `Begin(key)` now `std::move()` the read guard from `ctx.read_set_.back()` directly into the iterator
+- `End()` passes an empty `ReadPageGuard{}` (no page to latch for end sentinel)
+- `LoadPageAndIterator()` still calls `bpm_->ReadPage()` internally — this is safe because it's loading a **different** page (the next sibling)
+
+### Key Insight
+The caller already holds the read latch from traversal. Moving it into the iterator (ownership transfer) avoids re-acquiring it. This is the standard RAII pattern: transfer ownership, don't duplicate.
+
+---
+
+## BUG (FIXED): LoadPageAndIterator Stack Overflow — Recursive to Iterative
+
+### Root Cause
+`LoadPageAndIterator` was recursive: when all entries on a page were tombstoned, it called itself with `next_page_id`. A long chain of fully-tombstoned pages could overflow the stack.
+
+### Fix
+Converted to iterative `while (true)` loop at `index_iterator.cpp:90-127`. The loop advances `page_id = leaf_page_->GetNextPageId()` and re-enters from the top, breaking out when a valid entry is found or `INVALID_PAGE_ID` is reached.
 
 ---
 
