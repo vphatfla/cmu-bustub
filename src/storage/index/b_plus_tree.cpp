@@ -273,7 +273,8 @@ auto BPLUSTREE_TYPE::OptimisticTraverseNode(std::deque<ReadPageGuard> &read_set,
     }
   }
   WritePageGuard child_write_guard = bpm_->WritePage(child_page_id);
-  read_set.pop_front();
+  // Keep parent read-locked until the optimistic operation completes.
+  // This prevents concurrent splits/merges on this leaf (they require parent write lock).
   return child_write_guard;
 }
 
@@ -697,6 +698,11 @@ auto BPLUSTREE_TYPE::RedistributeLeafPageLeftSibling(LeafPage *curr_page, LeafPa
   auto sibling_index = sibling_page->GetSize() - 1;
   while (curr_logical_size < curr_min_required_size &&
          (sibling_page->GetSize() - sibling_page->GetTombstonesSize()) > sibling_min_required_size) {
+    // Evict tombstones if curr_page is physically full (no room to shift right)
+    while (curr_page->GetSize() >= curr_page->GetMaxSize() && curr_page->GetTombstonesSize() > 0) {
+      curr_page->DeleteOldestKeyInTombstones();
+    }
+
     auto key = sibling_page->KeyAt(sibling_index);
     auto value = sibling_page->ValueAt(sibling_index);
     curr_page->ShiftKeyAndValueRight(0);
@@ -885,13 +891,13 @@ auto BPLUSTREE_TYPE::RedistributeInternalPageLeftSibling(InternalPage *curr_page
   }
 
   auto n = sibling_page->GetSize();
-  // shift right in the current page
-  curr_page->ShiftKeyAndValueRight(1);
-  // pull the key from parent page
+  // shift right ALL entries in the current page (including value[0])
+  curr_page->ShiftKeyAndValueRight(0);
+  // pull the separator key from parent page into key[1]
   curr_page->SetKeyAt(1, parent_page->KeyAt(curr_child_index));
-  // borrow the pointer from sibiling
+  // borrow the rightmost pointer from sibling into value[0]
   curr_page->SetValueAt(0, sibling_page->ValueAt(n - 1));
-  // push the key up from sibling page
+  // push the sibling's rightmost key up to parent as new separator
   parent_page->SetKeyAt(curr_child_index, sibling_page->KeyAt(n - 1));
 
   // decrease k-v count from sibling page, shoudn't have to physicially delete
@@ -965,7 +971,7 @@ auto BPLUSTREE_TYPE::Begin() -> INDEXITERATOR_TYPE {
     auto header_page = header_guard.As<BPlusTreeHeaderPage>();
 
     if (header_page->root_page_id_ == INVALID_PAGE_ID) {
-      return INDEXITERATOR_TYPE{bpm_, comparator_, INVALID_PAGE_ID, std::nullopt};
+      return INDEXITERATOR_TYPE{bpm_, comparator_, ReadPageGuard{}, INVALID_PAGE_ID, std::nullopt};
     }
     ctx.root_page_id_ = header_page->root_page_id_;
     // Must hold the read latch on the root page before release the header page
@@ -983,7 +989,8 @@ auto BPLUSTREE_TYPE::Begin() -> INDEXITERATOR_TYPE {
     ctx.read_set_.pop_front();
   }
 
-  return INDEXITERATOR_TYPE{bpm_, comparator_, ctx.read_set_.back().GetPageId(), std::nullopt};
+  auto page_id = ctx.read_set_.back().GetPageId();
+  return INDEXITERATOR_TYPE{bpm_, comparator_, std::move(ctx.read_set_.back()), page_id, std::nullopt};
 }
 
 /**
@@ -999,7 +1006,7 @@ auto BPLUSTREE_TYPE::Begin(const KeyType &key) -> INDEXITERATOR_TYPE {
     auto header_page = header_guard.As<BPlusTreeHeaderPage>();
 
     if (header_page->root_page_id_ == INVALID_PAGE_ID) {
-      return INDEXITERATOR_TYPE{bpm_, comparator_, INVALID_PAGE_ID, std::nullopt};
+      return INDEXITERATOR_TYPE{bpm_, comparator_, ReadPageGuard{}, INVALID_PAGE_ID, std::nullopt};
     }
     ctx.root_page_id_ = header_page->root_page_id_;
     // Must hold the read latch on the root page before release the header page
@@ -1008,7 +1015,8 @@ auto BPLUSTREE_TYPE::Begin(const KeyType &key) -> INDEXITERATOR_TYPE {
 
   TraverseNodesToLeaf(ctx.read_set_, key, true, true);
 
-  return INDEXITERATOR_TYPE{bpm_, comparator_, ctx.read_set_.back().GetPageId(), key};
+  auto page_id = ctx.read_set_.back().GetPageId();
+  return INDEXITERATOR_TYPE{bpm_, comparator_, std::move(ctx.read_set_.back()), page_id, key};
 }
 
 /**
@@ -1018,7 +1026,7 @@ auto BPLUSTREE_TYPE::Begin(const KeyType &key) -> INDEXITERATOR_TYPE {
  */
 FULL_INDEX_TEMPLATE_ARGUMENTS
 auto BPLUSTREE_TYPE::End() -> INDEXITERATOR_TYPE {
-  return INDEXITERATOR_TYPE{bpm_, comparator_, INVALID_PAGE_ID, std::nullopt};
+  return INDEXITERATOR_TYPE{bpm_, comparator_, ReadPageGuard{}, INVALID_PAGE_ID, std::nullopt};
 }
 
 /**

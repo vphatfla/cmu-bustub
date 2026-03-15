@@ -36,31 +36,16 @@ INDEXITERATOR_TYPE::~IndexIterator() = default;  // NOLINT
 
 FULL_INDEX_TEMPLATE_ARGUMENTS
 INDEXITERATOR_TYPE::IndexIterator(std::shared_ptr<TracedBufferPoolManager> bpm, const KeyComparator &comparator,
-                                  const page_id_t page_id, const std::optional<KeyType> &key)
+                                  ReadPageGuard leaf_guard, const page_id_t page_id,
+                                  const std::optional<KeyType> &key)
     : bpm_(std::move(bpm)), comparator_(comparator), page_id_(page_id) {
-  LoadPageAndIterator(page_id_, key);
-}
-
-FULL_INDEX_TEMPLATE_ARGUMENTS
-void INDEXITERATOR_TYPE::FindAndSetValidIndex() {
-  while (key_index_ < leaf_page_->GetSize()) {
-    if (tombstone_indices_set_.count(key_index_) != 0) {
-      key_index_ += 1;
-    } else {
-      break;
-    }
-  }
-}
-
-FULL_INDEX_TEMPLATE_ARGUMENTS
-void INDEXITERATOR_TYPE::LoadPageAndIterator(const page_id_t page_id, const std::optional<KeyType> &key) {
-  page_id_ = page_id;
-  if (page_id == INVALID_PAGE_ID) {
+  if (page_id_ == INVALID_PAGE_ID) {
     key_index_ = 0;
     return;
   }
 
-  read_guard_ = bpm_->ReadPage(page_id);
+  // Use the guard passed in directly (avoids double read-latch deadlock)
+  read_guard_ = std::move(leaf_guard);
   leaf_page_ = read_guard_.As<LeafPage>();
   key_index_ = 0;
   if (key.has_value()) {
@@ -79,16 +64,65 @@ void INDEXITERATOR_TYPE::LoadPageAndIterator(const page_id_t page_id, const std:
   }
 
   tombstone_indices_set_.clear();
-
   auto indices = leaf_page_->GetIndexesInTombstones();
   tombstone_indices_set_ = {indices.begin(), indices.end()};
 
   FindAndSetValidIndex();
 
   if (key_index_ >= leaf_page_->GetSize()) {
-    // no keys in this leaf page is valid (all tombstone)
-    // go to next sibling page
     LoadPageAndIterator(leaf_page_->GetNextPageId(), key);
+  }
+}
+
+FULL_INDEX_TEMPLATE_ARGUMENTS
+void INDEXITERATOR_TYPE::FindAndSetValidIndex() {
+  while (key_index_ < leaf_page_->GetSize()) {
+    if (tombstone_indices_set_.count(key_index_) != 0) {
+      key_index_ += 1;
+    } else {
+      break;
+    }
+  }
+}
+
+FULL_INDEX_TEMPLATE_ARGUMENTS
+void INDEXITERATOR_TYPE::LoadPageAndIterator(page_id_t page_id, const std::optional<KeyType> &key) {
+  while (true) {
+    page_id_ = page_id;
+    if (page_id == INVALID_PAGE_ID) {
+      key_index_ = 0;
+      return;
+    }
+
+    read_guard_ = bpm_->ReadPage(page_id);
+    leaf_page_ = read_guard_.As<LeafPage>();
+    key_index_ = 0;
+    if (key.has_value()) {
+      auto left = 0;
+      auto right = leaf_page_->GetSize();
+      while (left < right) {
+        auto mid = left + (right - left) / 2;
+        auto cmp = comparator_(leaf_page_->KeyAt(mid), key.value());
+        if (cmp < 0) {
+          left = mid + 1;
+        } else {
+          right = mid;
+        }
+      }
+      key_index_ = left;
+    }
+
+    tombstone_indices_set_.clear();
+    auto indices = leaf_page_->GetIndexesInTombstones();
+    tombstone_indices_set_ = {indices.begin(), indices.end()};
+
+    FindAndSetValidIndex();
+
+    if (key_index_ < leaf_page_->GetSize()) {
+      return;
+    }
+    // all entries on this page are tombstoned/past end, advance to next sibling
+    page_id = leaf_page_->GetNextPageId();
   }
 }
 
