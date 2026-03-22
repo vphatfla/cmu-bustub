@@ -500,8 +500,77 @@ Converted to iterative `while (true)` loop at `index_iterator.cpp:90-127`. The l
 
 ---
 
+## BUG (FIXED): Header Write Lock Released Early in Remove — Concurrent Access
+
+### Root Cause
+In `RemoveKeyValueInInternalPage`, when the root is promoted (root has size 1 after a merge), the code moved the header guard out of `ctx.header_page_`:
+```cpp
+auto header_page_guard = std::move(ctx.header_page_.value());  // MOVES OUT
+// ... update header ...
+// header_page_guard goes out of scope → HEADER WRITE LOCK RELEASED EARLY
+```
+This released the header write lock while the Remove operation was still in progress, allowing other threads to enter the pessimistic path concurrently.
+
+Same issue in `Remove()` when root leaf becomes empty:
+```cpp
+auto header_guard2 = std::move(ctx.header_page_.value());  // MOVES OUT → EARLY RELEASE
+```
+
+### Fix
+Access the header page through `ctx.header_page_` without moving the guard out:
+```cpp
+auto header_page = ctx.header_page_.value().AsMut<BPlusTreeHeaderPage>();
+header_page->root_page_id_ = page->ValueAt(0);  // or INVALID_PAGE_ID
+```
+The guard stays in `ctx.header_page_` and is released when `ctx` goes out of scope at the end of `Remove()`.
+
+Also removed `ctx.header_page_ = std::nullopt` and `DrainQueueUntilSize(ctx.write_set_, 0)` from Insert's split path — let `ctx` destructor handle cleanup to avoid early header release.
+
+### Verification
+With both optimistic paths disabled, MixTest1 passes **20/20** runs after this fix (was failing 100% before).
+
+---
+
+## BUG (IN PROGRESS): Optimistic Insert Concurrency Issue — MixTest1/MixTest2
+
+### Status: Root cause NOT yet identified
+
+### What We Know
+1. **Pessimistic path is correct**: With both `InsertOptimistic` and `RemoveOptimistic` disabled (returning nullopt/false), MixTest1 passes 20/20.
+2. **InsertOptimistic is the culprit**: Disabling only InsertOptimistic fixes MixTest1. Disabling only RemoveOptimistic does NOT fix it.
+3. **Single-threaded logic is correct**: A single-threaded test with the same operations (including repeated insert/delete of same keys) passes 100%.
+4. **TSAN detects data races**: On `FrameHeader::is_write_` and `FrameHeader::is_dirty_` fields. These are in the buffer pool code (Project 1). The `is_write_` race is between `CheckedWritePage` (sets under `bpm_latch_`) and `WritePageGuard::Drop()` (sets under `rwlatch_`). The `is_dirty_` race is via `GetDataMut()`.
+5. **Holding all parent read latches doesn't help**: Even when `OptimisticTraverseNode` keeps ALL parent read latches (no `pop_front`), the test still fails.
+6. **Global mutex on Remove serializes everything and passes**: A `std::mutex` on Remove alone fixes MixTest1.
+
+### Hypotheses to Investigate
+1. **Buffer pool data race causes corruption**: The TSAN-detected races on `is_dirty_`/`is_write_` might cause the page data to be corrupted or stale reads. Fixing these races in the BPM might fix the B+ tree test.
+2. **Read→Write gap in OptimisticTraverseNode**: Between dropping the leaf's read latch and acquiring the write latch, a pessimistic operation could restructure the tree (despite holding parent read latch). The parent read latch should prevent this, but maybe there's an edge case.
+3. **Stale root_page_id**: InsertOptimistic reads root_page_id from header, releases header read latch, then a pessimistic Remove changes the root (promotion). InsertOptimistic is now traversing from a stale root. The stale root still leads to valid pages, but the traversal path might be incorrect.
+
+### Key Experimental Results
+| Configuration | MixTest1 Result |
+|---|---|
+| Both optimistic enabled | FAIL 100% |
+| Both optimistic disabled + header fix | PASS 20/20 |
+| InsertOptimistic only (RemoveOpt disabled) | FAIL 100% |
+| RemoveOptimistic only (InsertOpt disabled) | PASS 5/5 |
+| Global mutex on Remove only | PASS 3/3 |
+| Global mutex on Insert only | FAIL |
+| Global mutex on both | PASS 3/3 |
+| All safe-node checks disabled (pessimistic only) | Still FAILS |
+
+### Test Parameters (MixTest1)
+- `leaf_max_size=3`, `internal_max_size=5`, `BPM_SIZE=50`
+- 1000 keys total: even (insert), odd (delete)
+- 10 threads: 5 insert, 5 delete, each processes ALL their keys
+- Runs 20 iterations per call; calls `MixTest1Call<0>()` then `MixTest1Call<3>()`
+
+---
+
 ## Remaining TODOs
 
-1. **Task #3**: Test iterator (`make b_plus_tree_iterator_test`)
-2. **Task #4**: Run concurrent tests (`make b_plus_tree_concurrent_test`)
-3. Run `make format`, `make check-lint`, `make check-clang-tidy-p2` before submission
+1. **Fix InsertOptimistic concurrency bug** (MixTest1/MixTest2)
+2. **Task #3**: Test iterator (`make b_plus_tree_iterator_test`)
+3. **Task #4**: Finish concurrent tests (`make b_plus_tree_concurrent_test`)
+4. Run `make format`, `make check-lint`, `make check-clang-tidy-p2` before submission
