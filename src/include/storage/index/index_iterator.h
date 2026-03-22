@@ -39,8 +39,8 @@ class IndexIterator {
   // you may define your own constructor based on your member variables
   ~IndexIterator();  // NOLINT
 
-  IndexIterator(std::shared_ptr<TracedBufferPoolManager> bpm, const KeyComparator &comparator,
-                ReadPageGuard leaf_guard, page_id_t page_id, const std::optional<KeyType> &key);
+  IndexIterator(std::shared_ptr<TracedBufferPoolManager> bpm, const KeyComparator &comparator, ReadPageGuard leaf_guard,
+                page_id_t page_id, const std::optional<KeyType> &key);
 
   auto IsEnd() -> bool;
 

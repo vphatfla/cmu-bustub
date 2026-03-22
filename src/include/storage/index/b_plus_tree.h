@@ -214,7 +214,8 @@ class BPlusTree {
   /// @note Caller must push root guard onto guard_set before calling. For Insert, caller handles header page
   /// separately.
   template <typename GuardType>
-  void TraverseNodesToLeaf(std::deque<GuardType> &guard_set, const KeyType &key, const bool release_parent, bool is_insert) {
+  void TraverseNodesToLeaf(std::deque<GuardType> &guard_set, const KeyType &key, const bool release_parent,
+                           bool is_insert) {
     static_assert(std::is_same_v<GuardType, WritePageGuard> || std::is_same_v<GuardType, ReadPageGuard>,
                   "GuardType must be either WritePageGuard or ReadPageGuard");
 
@@ -240,11 +241,10 @@ class BPlusTree {
       }
 
       // Safe node check for internal pages only (no tombstones, physical size = logical size)
-      if ( (is_insert && (curr_page->GetSize() < curr_page->GetMaxSize()))
-                  || (!is_insert && (curr_page->GetSize() > curr_page->GetMinSize()))) {
-
+      if ((is_insert && (curr_page->GetSize() < curr_page->GetMaxSize())) ||
+          (!is_insert && (curr_page->GetSize() > curr_page->GetMinSize()))) {
         while (guard_set.size() > 1) {
-            guard_set.pop_front();
+          guard_set.pop_front();
         }
       }
 

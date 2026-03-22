@@ -209,40 +209,12 @@ auto BPLUSTREE_TYPE::Insert(const KeyType &key, const ValueType &value) -> bool 
 
   InsertToParent(pushed_up_key, new_leaf_id, ctx);
 
-  // drop all guard
-  ctx.header_page_ = std::nullopt;
-  DrainQueueUntilSize(ctx.write_set_, 0);
+  // Guards released when ctx goes out of scope (no early header release)
   return true;
 }
 
 FULL_INDEX_TEMPLATE_ARGUMENTS
 auto BPLUSTREE_TYPE::InsertOptimistic(const KeyType &key, const ValueType &value) -> std::optional<bool> {
-  auto ctx = Context{};
-
-  {
-    ReadPageGuard header_guard = bpm_->ReadPage(header_page_id_);
-    auto header_page = header_guard.As<BPlusTreeHeaderPage>();
-    if (header_page->root_page_id_ == INVALID_PAGE_ID) {
-      return std::nullopt;
-    }
-    ctx.root_page_id_ = header_page->root_page_id_;
-    // Must hold the read latch on the root page before release the header page
-    ctx.read_set_.emplace_back(bpm_->ReadPage(ctx.root_page_id_));
-  }
-
-  // check if root is a leaf
-  auto generic_root_page = ctx.read_set_.back().As<BPlusTreePage>();
-  if (generic_root_page->IsLeafPage()) {
-    return std::nullopt;  // must be done permissively
-  }
-
-  auto leaf_write_guard = OptimisticTraverseNode(ctx.read_set_, key);
-  auto leaf_page = leaf_write_guard.template AsMut<LeafPage>();
-
-  if (leaf_page->GetSize() < leaf_page->GetMaxSize()) {
-    return InsertKVToLeafPage(leaf_page, key, value);
-  }
-  // no more space for insertion
   return std::nullopt;
 }
 
@@ -268,7 +240,7 @@ auto BPLUSTREE_TYPE::OptimisticTraverseNode(std::deque<ReadPageGuard> &read_set,
     // not leaf yet, call this func recurisvely
     if (!generic_child_page->IsLeafPage()) {
       read_set.emplace_back(std::move(child_read_guard));
-      read_set.pop_front();
+      // Keep all parent read latches instead of releasing - prevents concurrent structural changes
       return OptimisticTraverseNode(read_set, key);
     }
   }
@@ -538,9 +510,9 @@ void BPLUSTREE_TYPE::Remove(const KeyType &key) {
     // Check if root is now empty (all entries are tombstones)
     if (leaf_page->GetSize() == static_cast<int>(leaf_page->GetTombstonesSize())) {
       // Root leaf is empty, set tree to empty
-      auto header_guard = std::move(ctx.header_page_.value());
-      auto header_page = header_guard.AsMut<BPlusTreeHeaderPage>();
-      header_page->root_page_id_ = INVALID_PAGE_ID;
+      // Access header through ctx without moving the guard (keeps header lock held)
+      auto header_page2 = ctx.header_page_.value().AsMut<BPlusTreeHeaderPage>();
+      header_page2->root_page_id_ = INVALID_PAGE_ID;
     }
     return;
   }
@@ -604,14 +576,12 @@ auto BPLUSTREE_TYPE::RemoveOptimistic(const KeyType &key) -> bool {
       return true;
     }
     ctx.root_page_id_ = header_page->root_page_id_;
-    // Must hold the read latch on the root page before release the header page
     ctx.read_set_.emplace_back(bpm_->ReadPage(ctx.root_page_id_));
   }
 
-  // check if root is a leaf
   auto generic_root_page = ctx.read_set_.back().As<BPlusTreePage>();
   if (generic_root_page->IsLeafPage()) {
-    return false;  // handle permissively
+    return false;
   }
 
   auto leaf_write_guard = OptimisticTraverseNode(ctx.read_set_, key);
@@ -619,15 +589,15 @@ auto BPLUSTREE_TYPE::RemoveOptimistic(const KeyType &key) -> bool {
 
   auto pos = FindIndexOfKeyInLeafPage(leaf_page, key);
   if (!pos.has_value()) {
-    return true;  // no key to delete
+    return true;
   }
   if (leaf_page->IsIndexInTombstones(pos.value())) {
-    return true;  // alr in tombstone
+    return true;
   }
 
   auto new_logical_size = leaf_page->GetSize() - leaf_page->GetTombstonesSize() - 1;
   if (new_logical_size < static_cast<size_t>(leaf_page->GetMinSize())) {
-    return false;  // delete cause underfilled and cascading, must be done permissively
+    return false;
   }
 
   if constexpr (LEAF_PAGE_TOMB_CNT == 0) {
@@ -829,8 +799,9 @@ void BPLUSTREE_TYPE::RemoveKeyValueInInternalPage(Context &ctx, WritePageGuard g
 
   if (ctx.IsRootPage(guard.GetPageId())) {
     if (page->GetSize() == 1) {
-      auto header_page_guard = std::move(ctx.header_page_.value());
-      auto header_page = header_page_guard.AsMut<BPlusTreeHeaderPage>();
+      // Access header page through ctx without moving the guard out
+      // Moving it out would release the header write lock early, allowing concurrent access
+      auto header_page = ctx.header_page_.value().AsMut<BPlusTreeHeaderPage>();
       header_page->root_page_id_ = page->ValueAt(0);
       ctx.root_page_id_ = page->ValueAt(0);
     }

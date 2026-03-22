@@ -36,8 +36,7 @@ INDEXITERATOR_TYPE::~IndexIterator() = default;  // NOLINT
 
 FULL_INDEX_TEMPLATE_ARGUMENTS
 INDEXITERATOR_TYPE::IndexIterator(std::shared_ptr<TracedBufferPoolManager> bpm, const KeyComparator &comparator,
-                                  ReadPageGuard leaf_guard, const page_id_t page_id,
-                                  const std::optional<KeyType> &key)
+                                  ReadPageGuard leaf_guard, const page_id_t page_id, const std::optional<KeyType> &key)
     : bpm_(std::move(bpm)), comparator_(comparator), page_id_(page_id) {
   if (page_id_ == INVALID_PAGE_ID) {
     key_index_ = 0;

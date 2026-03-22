@@ -484,4 +484,77 @@ TEST(BPlusTreeConcurrentTest, MixTest2) {  // NOLINT
   MixTest2Call<0>();
   MixTest2Call<3>();
 }
+
+// Single-threaded version of MixTest1 to isolate logic bugs from concurrency issues
+TEST(BPlusTreeConcurrentTest, MixTest1SingleThread) {  // NOLINT
+  auto key_schema = ParseCreateStatement("a bigint");
+  GenericComparator<8> comparator(key_schema.get());
+
+  auto *disk_manager = new DiskManagerUnlimitedMemory();
+  auto *bpm = new BufferPoolManager(BPM_SIZE, disk_manager);
+
+  page_id_t page_id = bpm->NewPage();
+  BPlusTree<GenericKey<8>, RID, GenericComparator<8>, 0> tree("foo_pk", page_id, bpm, comparator, 3, 5);
+
+  std::vector<int64_t> for_insert;
+  std::vector<int64_t> for_delete;
+  int64_t sieve = 2;
+  int64_t total_keys = 1000;
+  for (int64_t i = 1; i <= total_keys; i++) {
+    if (i % sieve == 0) {
+      for_insert.push_back(i);
+    } else {
+      for_delete.push_back(i);
+    }
+  }
+
+  // Insert all the keys to delete
+  InsertHelper<0>(&tree, for_delete);
+
+  // Mimic MixTest1: 5 threads insert ALL even keys, 5 threads delete ALL odd keys
+  // Simulate by interleaving: for each key index, do 5 inserts then 5 deletes
+  GenericKey<8> index_key;
+  RID rid;
+  size_t ins_idx = 0;
+  size_t del_idx = 0;
+  while (ins_idx < for_insert.size() || del_idx < for_delete.size()) {
+    // Simulate multiple insert threads on the same key
+    if (ins_idx < for_insert.size()) {
+      for (int rep = 0; rep < 5; rep++) {
+        int64_t value = for_insert[ins_idx] & 0xFFFFFFFF;
+        rid.Set(static_cast<int32_t>(for_insert[ins_idx] >> 32), value);
+        index_key.SetFromInteger(for_insert[ins_idx]);
+        tree.Insert(index_key, rid);
+      }
+      ins_idx++;
+    }
+    // Simulate multiple delete threads on the same key
+    if (del_idx < for_delete.size()) {
+      for (int rep = 0; rep < 5; rep++) {
+        index_key.SetFromInteger(for_delete[del_idx]);
+        tree.Remove(index_key);
+      }
+      // Verify key was actually removed
+      std::vector<RID> result;
+      index_key.SetFromInteger(for_delete[del_idx]);
+      if (tree.GetValue(index_key, &result)) {
+        std::cerr << "BUG: Remove(" << for_delete[del_idx] << ") but key still found!" << std::endl;
+        ASSERT_TRUE(false);
+      }
+      del_idx++;
+    }
+  }
+
+  int64_t size = 0;
+  for (auto iter = tree.Begin(); iter != tree.End(); ++iter) {
+    const auto &pair = *iter;
+    ASSERT_EQ((pair.first).ToString(), for_insert[size]);
+    size++;
+  }
+  ASSERT_EQ(size, static_cast<int64_t>(for_insert.size()));
+
+  delete disk_manager;
+  delete bpm;
+}
+
 }  // namespace bustub
