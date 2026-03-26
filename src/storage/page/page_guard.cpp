@@ -36,7 +36,7 @@ ReadPageGuard::ReadPageGuard(page_id_t page_id, std::shared_ptr<FrameHeader> fra
       disk_scheduler_(std::move(disk_scheduler)),
       bpm_cv_(std::move(bpm_cv_)) {
   frame_->page_id_ = page_id;
-  frame_->is_write_ = false;
+  // is_write_ already set by BPM under bpm_latch_; don't write it here (would race)
   // pin_count_ is now incremented in BPM while holding bpm_latch to prevent race conditions
   is_valid_ = true;
 }
@@ -127,8 +127,9 @@ void ReadPageGuard::Drop() {
   }
 
   is_valid_ = false;
-  frame_->is_write_ = false;
-  frame_->rwlatch_.unlock_shared();  // Release rwlatch first to maintain lock order
+  // ReadPageGuard never sets is_write_ = true, so don't clear it here.
+  // Writing is_write_ under a shared lock races with concurrent writers.
+  frame_->rwlatch_.unlock_shared();
 
   {
     std::lock_guard<std::mutex> lock(*bpm_latch_);
@@ -158,9 +159,8 @@ WritePageGuard::WritePageGuard(page_id_t page_id, std::shared_ptr<FrameHeader> f
       disk_scheduler_(std::move(disk_scheduler)),
       bpm_cv_(std::move(bpm_cv)) {
   frame_->page_id_ = page_id;
-  frame_->is_write_ = true;
+  // is_write_ already set by BPM under bpm_latch_; don't write it here (would race)
   // pin_count_ is now incremented in BPM while holding bpm_latch to prevent race conditions
-
   is_valid_ = true;
 }
 
@@ -253,17 +253,13 @@ void WritePageGuard::Drop() {
   }
 
   is_valid_ = false;
-  frame_->is_write_ = false;
-  frame_->rwlatch_.unlock();  // Release rwlatch first to maintain lock order
+  // is_write_ is managed by BPM under bpm_latch_; don't write it here (would race)
+  frame_->rwlatch_.unlock();
 
+  // Per spec: Drop() just unpins. No flush here.
+  // Dirty pages are flushed during eviction in CheckedWritePage/CheckedReadPage MISS_EVICTED paths.
   {
     std::lock_guard<std::mutex> lock(*bpm_latch_);
-    if (frame_->is_dirty_) {
-      // this mean somehow is holdig the data stream pointer, but it is drop(), hence we must write the remainning data
-      // to the disk, and keep the frame_->is_dirty to true since the stream pointer can still be written?
-      Flush();
-      frame_->is_dirty_ = true;
-    }
     frame_->pin_count_ -= 1;
     BUSTUB_ENSURE(frame_->pin_count_ >= 0, "WritePageGuard frame pin_count must be >= 0 after dropping the frame");
     if (frame_->pin_count_ == 0) {

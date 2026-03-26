@@ -42,6 +42,7 @@ BPLUSTREE_TYPE::BPlusTree(std::string name, page_id_t header_page_id, BufferPool
   WritePageGuard guard = bpm_->WritePage(header_page_id_);
   auto root_page = guard.AsMut<BPlusTreeHeaderPage>();
   root_page->root_page_id_ = INVALID_PAGE_ID;
+
 }
 
 /**
@@ -215,6 +216,29 @@ auto BPLUSTREE_TYPE::Insert(const KeyType &key, const ValueType &value) -> bool 
 
 FULL_INDEX_TEMPLATE_ARGUMENTS
 auto BPLUSTREE_TYPE::InsertOptimistic(const KeyType &key, const ValueType &value) -> std::optional<bool> {
+  auto ctx = Context{};
+
+  {
+    ReadPageGuard header_guard = bpm_->ReadPage(header_page_id_);
+    auto header_page = header_guard.As<BPlusTreeHeaderPage>();
+    if (header_page->root_page_id_ == INVALID_PAGE_ID) {
+      return std::nullopt;
+    }
+    ctx.root_page_id_ = header_page->root_page_id_;
+    ctx.read_set_.emplace_back(bpm_->ReadPage(ctx.root_page_id_));
+  }
+
+  auto generic_root_page = ctx.read_set_.back().As<BPlusTreePage>();
+  if (generic_root_page->IsLeafPage()) {
+    return std::nullopt;
+  }
+
+  auto leaf_write_guard = OptimisticTraverseNode(ctx.read_set_, key);
+  auto leaf_page = leaf_write_guard.template AsMut<LeafPage>();
+
+  if (leaf_page->GetSize() < leaf_page->GetMaxSize()) {
+    return InsertKVToLeafPage(leaf_page, key, value);
+  }
   return std::nullopt;
 }
 
@@ -240,13 +264,14 @@ auto BPLUSTREE_TYPE::OptimisticTraverseNode(std::deque<ReadPageGuard> &read_set,
     // not leaf yet, call this func recurisvely
     if (!generic_child_page->IsLeafPage()) {
       read_set.emplace_back(std::move(child_read_guard));
-      // Keep all parent read latches instead of releasing - prevents concurrent structural changes
+      read_set.pop_front();  // crabbing: release parent after acquiring child
       return OptimisticTraverseNode(read_set, key);
     }
   }
+  // Keep parent read-latched: prevents concurrent splits/merges on this leaf
+  // (they require parent write latch). The read→write gap on the leaf is safe
+  // because the parent read latch blocks structural changes.
   WritePageGuard child_write_guard = bpm_->WritePage(child_page_id);
-  // Keep parent read-locked until the optimistic operation completes.
-  // This prevents concurrent splits/merges on this leaf (they require parent write lock).
   return child_write_guard;
 }
 
@@ -430,6 +455,7 @@ auto BPLUSTREE_TYPE::CreateNewRootAndUpdateHeader(Context &ctx) -> std::pair<Wri
 
   header_page->root_page_id_ = new_root_page_id;
   ctx.root_page_id_ = new_root_page_id;
+
   ctx.header_page_ = std::move(header_guard);
 
   return {std::move(new_root_page_guard), new_root_page_id};
@@ -472,6 +498,7 @@ void BPLUSTREE_TYPE::Remove(const KeyType &key) {
   auto leaf_guard = std::move(ctx.write_set_.back());
   ctx.write_set_.pop_back();
   auto leaf_page = leaf_guard.AsMut<LeafPage>();
+
   auto pos = FindIndexOfKeyInLeafPage(leaf_page, key);
 
   if (!pos.has_value()) {
@@ -513,6 +540,7 @@ void BPLUSTREE_TYPE::Remove(const KeyType &key) {
       // Access header through ctx without moving the guard (keeps header lock held)
       auto header_page2 = ctx.header_page_.value().AsMut<BPlusTreeHeaderPage>();
       header_page2->root_page_id_ = INVALID_PAGE_ID;
+    
     }
     return;
   }
@@ -803,6 +831,7 @@ void BPLUSTREE_TYPE::RemoveKeyValueInInternalPage(Context &ctx, WritePageGuard g
       // Moving it out would release the header write lock early, allowing concurrent access
       auto header_page = ctx.header_page_.value().AsMut<BPlusTreeHeaderPage>();
       header_page->root_page_id_ = page->ValueAt(0);
+
       ctx.root_page_id_ = page->ValueAt(0);
     }
     return;
