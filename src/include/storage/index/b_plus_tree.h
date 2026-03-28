@@ -228,10 +228,10 @@ class BPlusTree {
             guard_set.pop_front();
           }
         } else if (!is_insert) {
-          // For delete: use logical size (physical - tombstones) for safe check
-          auto leaf_page = guard_set.back().template As<LeafPage>();
-          auto logical_size = leaf_page->GetSize() - static_cast<int>(leaf_page->GetTombstonesSize());
-          if (logical_size > leaf_page->GetMinSize()) {
+          // For delete: use physical size for safe check
+          // Tombstones keep physical size stable; only tombstone eviction reduces it by 1
+          // Safe if physical > min_size (worst case: eviction drops it to min_size, still valid)
+          if (curr_page->GetSize() > curr_page->GetMinSize()) {
             while (guard_set.size() > 1) {
               guard_set.pop_front();
             }

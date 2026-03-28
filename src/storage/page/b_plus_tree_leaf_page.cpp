@@ -189,6 +189,15 @@ void B_PLUS_TREE_LEAF_PAGE_TYPE::IncrementAllTombstonesIndexes() {
 }
 
 FULL_INDEX_TEMPLATE_ARGUMENTS
+void B_PLUS_TREE_LEAF_PAGE_TYPE::IncrementTombstonesIndexesFrom(const size_t from_index) {
+  for (size_t i = 0; i < num_tombstones_; i += 1) {
+    if (tombstones_[i] >= from_index) {
+      tombstones_[i] += 1;
+    }
+  }
+}
+
+FULL_INDEX_TEMPLATE_ARGUMENTS
 void B_PLUS_TREE_LEAF_PAGE_TYPE::DecreaseAllTombstonesIndexes() {
   for (size_t i = 0; i < num_tombstones_; i += 1) {
     tombstones_[i] -= 1;

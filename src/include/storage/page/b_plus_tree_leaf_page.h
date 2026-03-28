@@ -110,6 +110,9 @@ class BPlusTreeLeafPage : public BPlusTreePage {
   /// @brief Increase all tombstones index by 1
   void IncrementAllTombstonesIndexes();
 
+  /// @brief Increase tombstones indexes that are >= from_index by 1
+  void IncrementTombstonesIndexesFrom(size_t from_index);
+
   /// @brief Decrease all tombstones index by 1
   void DecreaseAllTombstonesIndexes();
   /**

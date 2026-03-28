@@ -361,6 +361,9 @@ auto BPLUSTREE_TYPE::InsertKVToLeafPage(LeafPage *page, const KeyType &key, cons
     return false;  // duplicated key, not allowed
   }
 
+  if constexpr (LEAF_PAGE_TOMB_CNT > 0) {
+    page->IncrementTombstonesIndexesFrom(index_pos);
+  }
   page->ShiftKeyAndValueRight(index_pos);
   page->SetKeyAt(index_pos, key);
   page->SetValueAt(index_pos, value);
@@ -524,10 +527,8 @@ void BPLUSTREE_TYPE::Remove(const KeyType &key) {
     }
   }
 
-  // Step 2: Check if page is still valid
-  auto logical_size = leaf_page->GetSize() - leaf_page->GetTombstonesSize();
-  auto min_required_size = static_cast<size_t>(leaf_page->GetMinSize());
-  if (logical_size >= min_required_size) {
+  // Step 2: Check if page is still valid (use physical size — tombstones prevent underflow)
+  if (leaf_page->GetSize() >= leaf_page->GetMinSize()) {
     return;
   }
 
@@ -621,8 +622,8 @@ auto BPLUSTREE_TYPE::RemoveOptimistic(const KeyType &key) -> bool {
     return true;
   }
 
-  auto new_logical_size = leaf_page->GetSize() - leaf_page->GetTombstonesSize() - 1;
-  if (new_logical_size < static_cast<size_t>(leaf_page->GetMinSize())) {
+  // Use physical size for safe check — tombstone eviction drops physical by at most 1
+  if (leaf_page->GetSize() <= leaf_page->GetMinSize()) {
     return false;
   }
 
