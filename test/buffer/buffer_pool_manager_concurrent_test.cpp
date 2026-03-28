@@ -279,8 +279,7 @@ TEST(BufferPoolManagerConcurrentTest, ConcurrentMultiReaderSingleWriterTest) {
           auto guard = bpm->ReadPage(target_pid);
           auto data = std::string(guard.GetData());
           // Data must always be "counter_<number>" — never partial/corrupted
-          EXPECT_EQ(data.substr(0, 8), "counter_")
-              << "Reader saw corrupted data: " << data;
+          EXPECT_EQ(data.substr(0, 8), "counter_") << "Reader saw corrupted data: " << data;
           // Verify the number part is parseable
           auto num_str = data.substr(8);
           bool valid_num = !num_str.empty();
@@ -304,8 +303,7 @@ TEST(BufferPoolManagerConcurrentTest, ConcurrentMultiReaderSingleWriterTest) {
     {
       auto guard = bpm->ReadPage(target_pid);
       auto data = std::string(guard.GetData());
-      ASSERT_EQ(data.substr(0, 8), "counter_")
-          << "Final read of target page is corrupted: " << data;
+      ASSERT_EQ(data.substr(0, 8), "counter_") << "Final read of target page is corrupted: " << data;
     }
 
     delete bpm;

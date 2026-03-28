@@ -42,7 +42,6 @@ BPLUSTREE_TYPE::BPlusTree(std::string name, page_id_t header_page_id, BufferPool
   WritePageGuard guard = bpm_->WritePage(header_page_id_);
   auto root_page = guard.AsMut<BPlusTreeHeaderPage>();
   root_page->root_page_id_ = INVALID_PAGE_ID;
-
 }
 
 /**
@@ -540,7 +539,6 @@ void BPLUSTREE_TYPE::Remove(const KeyType &key) {
       // Access header through ctx without moving the guard (keeps header lock held)
       auto header_page2 = ctx.header_page_.value().AsMut<BPlusTreeHeaderPage>();
       header_page2->root_page_id_ = INVALID_PAGE_ID;
-    
     }
     return;
   }
