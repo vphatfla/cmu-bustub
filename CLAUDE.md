@@ -15,7 +15,7 @@
 | Task #1 | B+Tree Pages (Base, Internal, Leaf) | ✅ DONE |
 | Task #2 | B+Tree Operations (Insert, Delete, Search) | ✅ DONE |
 | Task #3 | Index Iterator | ✅ DONE |
-| Task #4 | Concurrency Control (latch crabbing) | 🔄 IN PROGRESS (MixTest1/2 fail) |
+| Task #4 | Concurrency Control (latch crabbing) | ✅ DONE |
 
 ---
 
@@ -43,7 +43,10 @@ Tombstones defer physical deletion to keep pages above min_size. All underflow/s
 - Physical size only drops when tombstone buffer overflows and `DeleteOldestKeyInTombstones` is called
 
 ### LeafPage KeyAt/ValueAt Return By Reference
-`KeyAt()` and `ValueAt()` return `const KeyType &` / `const ValueType &` (not by value). This is required because `operator*()` returns `std::pair<const KeyType &, const ValueType &>` — returning by value would create dangling references to stack temporaries.
+`KeyAt()` and `ValueAt()` return `const KeyType &` / `const ValueType &` (not by value). Required because `operator*()` returns `std::pair<const KeyType &, const ValueType &>`.
+
+### InsertKVToLeafPage Must Update Tombstone Indices
+When inserting a new key, `ShiftKeyAndValueRight(pos)` shifts entries at positions >= pos right by 1. Tombstone indices >= pos must also be incremented, otherwise they point to the wrong entries. Call `IncrementTombstonesIndexesFrom(index_pos)` before the shift.
 
 ### GetMinSize — `ceil(max_size / 2)` Everywhere
 Single formula in `BPlusTreePage::GetMinSize()`. No override on internal pages.
@@ -102,7 +105,7 @@ BPlusTree<GenericKey<8>, RID, GenericComparator<8>, -1>   // NumTombs=-1 → TOM
 
 ---
 
-## Task #4: Concurrency Control — IN PROGRESS
+## Task #4: Concurrency Control — DONE
 
 ### Optimistic Latch Crabbing
 - Read-latch crabbing through internals, write-latch only the leaf
