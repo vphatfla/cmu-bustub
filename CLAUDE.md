@@ -187,6 +187,26 @@ make submit-p3
 
 ---
 
+## P3 Implementation Progress
+
+### SeqScan — Done
+- Members: `table_info_` (shared_ptr), `table_iterator_` (std::optional)
+- `Init()`: fetch table info from catalog, create iterator
+- `Next()`: skip deleted tuples, apply `filter_predicate_` if present, fill batch
+
+### Insert — In Progress
+Two fixes remaining:
+1. **Return value must be `Value(TypeId::INTEGER, count)`** — not `std::vector{int}`, needs `std::vector<Value>{Value(TypeId::INTEGER, inserted_count)}`
+2. **Must guard against second `Next()` call** — child is exhausted but the unconditional `emplace_back` on the count tuple means it returns `true` forever with count=0. Use a `has_returned_` bool flag or early return.
+
+### P3 Patterns Learned
+- **Modification executors (Insert/Delete/Update)** return a single integer tuple with the row count, not the actual tuples
+- **Index updates**: after insert/delete, iterate `GetTableIndexes()`, build key via `KeyFromTuple(table_schema, key_schema, GetKeyAttrs())`, call `InsertEntry`/`DeleteEntry`
+- **Child init**: parent `Init()` must call `child_executor_->Init()`
+- **`std::optional<TableIterator>`**: use for members with no default constructor, init via `emplace()` in `Init()`
+
+---
+
 ## Known Issues
 
 ### ASAN Hangs on macOS ARM64

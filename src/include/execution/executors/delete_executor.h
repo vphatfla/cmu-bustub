@@ -16,6 +16,7 @@
 #include <utility>
 #include <vector>
 
+#include "catalog/catalog.h"
 #include "execution/executor_context.h"
 #include "execution/executors/abstract_executor.h"
 #include "execution/plans/delete_plan.h"
@@ -44,6 +45,11 @@ class DeleteExecutor : public AbstractExecutor {
   /** The delete plan node to be executed */
   const DeletePlanNode *plan_;
 
+  /** table info */
+  std::shared_ptr<bustub::TableInfo> table_info_;
+
+  /** flag to determine if this exectucor was triggered */
+  bool has_returned_{false};
   /** The child executor from which RIDs for deleted tuples are pulled */
   std::unique_ptr<AbstractExecutor> child_executor_;
 };

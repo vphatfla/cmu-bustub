@@ -28,13 +28,14 @@ namespace bustub {
  */
 DeleteExecutor::DeleteExecutor(ExecutorContext *exec_ctx, const DeletePlanNode *plan,
                                std::unique_ptr<AbstractExecutor> &&child_executor)
-    : AbstractExecutor(exec_ctx), plan_(plan), child_executor_(std::move(child_executor)) {}
+    : AbstractExecutor(exec_ctx), plan_(plan), child_executor_(std::move(child_executor)) {
+}
 
 /** Initialize the delete */
 void DeleteExecutor::Init() {
-  has_returned_ = false;
-  child_executor_->Init();
-  table_info_ = exec_ctx_->GetCatalog()->GetTable(plan_->table_oid_);
+    has_returned_ = false;
+    child_executor_->Init();
+    table_info_ = exec_ctx_->GetCatalog()->GetTable(plan_->table_oid_);
 }
 
 /**
@@ -49,36 +50,28 @@ void DeleteExecutor::Init() {
  */
 auto DeleteExecutor::Next(std::vector<bustub::Tuple> *tuple_batch, std::vector<bustub::RID> *rid_batch,
                           size_t batch_size) -> bool {
-  tuple_batch->clear();
-  rid_batch->clear();
-  if (has_returned_) {
-    return false;
-  }
-  has_returned_ = true;
+    tuple_batch->clear();
+    rid_batch->clear();
+    
+    int inserted_tuple_count = 0;
+    auto child_tuple_batch = std::vector<bustub::Tuple>{};
+    auto child_rid_batch = std::vector<bustub::RID>{};
 
-  int deleted_tuple_count = 0;
-  auto child_tuple_batch = std::vector<bustub::Tuple>{};
-  auto child_rid_batch = std::vector<bustub::RID>{};
+    auto table_indexes = exec_ctx_->GetCatalog()->GetTableIndexes(table_info_->name_);
+    while (child_executor_->Next(&child_tuple_batch, &child_rid_batch, batch_size)) {
+        for (const auto& tuple: child_tuple_batch) {
+            // mark tuple as delete
+            table_info_->table_->UpdateTupleMeta(TupleMeta{.ts_=0, .is_deleted_=false}, tuple.GetRid());
 
-  auto table_indexes = exec_ctx_->GetCatalog()->GetTableIndexes(table_info_->name_);
-  while (child_executor_->Next(&child_tuple_batch, &child_rid_batch, batch_size)) {
-    for (const auto &tuple : child_tuple_batch) {
-      // mark tuple as delete
-      table_info_->table_->UpdateTupleMeta(TupleMeta{.ts_ = 0, .is_deleted_ = true}, tuple.GetRid());
+            // delete the index
+            for (const auto& index_info: table_indexes) {
+                auto index_key = tuple.KeyFromTuple(table_info_->schema_, index_info->key_schema_, index_info->index_->GetKeyAttrs());
+                index_info->index_->DeleteEntry(index_key, tuple.GetRid(), exec_ctx_->GetTransaction());
+            }
 
-      // delete the index
-      for (const auto &index_info : table_indexes) {
-        auto index_key =
-            tuple.KeyFromTuple(table_info_->schema_, index_info->key_schema_, index_info->index_->GetKeyAttrs());
-        index_info->index_->DeleteEntry(index_key, tuple.GetRid(), exec_ctx_->GetTransaction());
-      }
-      deleted_tuple_count += 1;
+
+        }
     }
-  }
-
-  tuple_batch->emplace_back(
-      bustub::Tuple(std::vector<Value>{Value{TypeId::INTEGER, deleted_tuple_count}}, &GetOutputSchema()));
-  return true;
 }
 
 }  // namespace bustub
