@@ -12,12 +12,16 @@
 
 #pragma once
 
+#include <memory>
+#include <optional>
 #include <vector>
 
+#include "catalog/catalog.h"
 #include "common/rid.h"
 #include "execution/executor_context.h"
 #include "execution/executors/abstract_executor.h"
 #include "execution/plans/index_scan_plan.h"
+#include "storage/table/table_iterator.h"
 #include "storage/table/tuple.h"
 
 namespace bustub {
@@ -40,5 +44,11 @@ class IndexScanExecutor : public AbstractExecutor {
  private:
   /** The index scan plan node to be executed. */
   const IndexScanPlanNode *plan_;
+
+  /** table info */
+  std::shared_ptr<TableInfo> table_info_;
+
+  /** Table iterator of the queried table */
+  std::optional<TableIterator> table_iterator_;
 };
 }  // namespace bustub

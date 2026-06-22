@@ -21,15 +21,22 @@ namespace bustub {
  * @param plan the index scan plan to be executed
  */
 IndexScanExecutor::IndexScanExecutor(ExecutorContext *exec_ctx, const IndexScanPlanNode *plan)
-    : AbstractExecutor(exec_ctx) {
-  UNIMPLEMENTED("TODO(P3): Add implementation.");
+    : AbstractExecutor(exec_ctx), plan_(plan) {
 }
 
-void IndexScanExecutor::Init() { UNIMPLEMENTED("TODO(P3): Add implementation."); }
+void IndexScanExecutor::Init() { 
+    table_info_ = exec_ctx_->GetCatalog()->GetTable(plan_->table_oid_);
+    table_iterator_.emplace(table_info_->table_->MakeIterator());
+}
 
 auto IndexScanExecutor::Next(std::vector<bustub::Tuple> *tuple_batch, std::vector<bustub::RID> *rid_batch,
                              size_t batch_size) -> bool {
-  UNIMPLEMENTED("TODO(P3): Add implementation.");
+    tuple_batch->clear();
+    rid_batch->clear();
+    tuple_batch->reserve(batch_size);
+    rid_batch->reserve(batch_size);
+
+
 }
 
 }  // namespace bustub

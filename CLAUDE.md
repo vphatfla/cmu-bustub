@@ -194,16 +194,38 @@ make submit-p3
 - `Init()`: fetch table info from catalog, create iterator
 - `Next()`: skip deleted tuples, apply `filter_predicate_` if present, fill batch
 
-### Insert — In Progress
-Two fixes remaining:
-1. **Return value must be `Value(TypeId::INTEGER, count)`** — not `std::vector{int}`, needs `std::vector<Value>{Value(TypeId::INTEGER, inserted_count)}`
-2. **Must guard against second `Next()` call** — child is exhausted but the unconditional `emplace_back` on the count tuple means it returns `true` forever with count=0. Use a `has_returned_` bool flag or early return.
+### Insert — Done
+- Drains child, inserts into table heap, updates all indexes, returns single count tuple
+- Uses `has_returned_` flag to prevent infinite loop on second `Next()` call
+
+### Update — Done
+- Delete-then-insert strategy: mark old tuple deleted, compute new tuple via `target_expressions_`, insert new tuple
+- Updates indexes: delete old key, insert new key
+- Returns single count tuple with `has_returned_` flag
+
+### Delete — Done
+- Marks tuples as deleted via `UpdateTupleMeta({0, true}, rid)`, deletes index entries
+- Returns single count tuple with `has_returned_` flag
+
+### IndexScan — Next Up
+- Cast index to `BPlusTreeIndexForTwoIntegerColumn` and store as `tree_` member
+- Two modes based on `pred_keys_`:
+  - **`pred_keys_` non-empty → point lookup**: evaluate each key expr with `Evaluate(nullptr, ...)`, build `Tuple({value}, &key_schema)`, call `tree_->ScanKey()` to get RIDs, fetch tuples from table heap
+  - **`pred_keys_` empty → ordered scan**: `tree_->GetBeginIterator()`, store iterator as `std::optional` member, stream tuples across `Next()` calls (same pattern as SeqScan)
+- `ScanKey` available on both base `Index` and `BPlusTreeIndex` — use `tree_->ScanKey()` for consistency
+- Skip deleted tuples in both modes
+- `filter_predicate_` — ignore for now; handle when implementing the optimizer rule
 
 ### P3 Patterns Learned
 - **Modification executors (Insert/Delete/Update)** return a single integer tuple with the row count, not the actual tuples
+- **`has_returned_` flag**: needed on all modification executors to prevent infinite `Next()` loop; reset in `Init()`
 - **Index updates**: after insert/delete, iterate `GetTableIndexes()`, build key via `KeyFromTuple(table_schema, key_schema, GetKeyAttrs())`, call `InsertEntry`/`DeleteEntry`
+- **Cache `GetTableIndexes()`** outside the loop to avoid repeated catalog lookups
+- **Declare child batch vectors outside the loop** to avoid re-allocation each iteration
 - **Child init**: parent `Init()` must call `child_executor_->Init()`
 - **`std::optional<TableIterator>`**: use for members with no default constructor, init via `emplace()` in `Init()`
+- **Update = delete + insert**: mark old tuple deleted, evaluate `target_expressions_` to build new tuple, insert new tuple
+- **Filter predicate**: only SeqScan needs to check it; Insert/Update/Delete receive pre-filtered tuples from child
 
 ---
 
