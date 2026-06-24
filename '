@@ -2,76 +2,46 @@
 //
 //                         BusTub
 //
-// delete_executor.cpp
+// index_scan_executor.cpp
 //
-// Identification: src/execution/delete_executor.cpp
+// Identification: src/execution/index_scan_executor.cpp
 //
 // Copyright (c) 2015-2025, Carnegie Mellon University Database Group
 //
 //===----------------------------------------------------------------------===//
 
-#include <memory>
-#include <utility>
-#include <vector>
+#include "execution/executors/index_scan_executor.h"
 #include "common/macros.h"
-#include "storage/table/tuple.h"
-
-#include "execution/executors/delete_executor.h"
+#include "storage/index/b_plus_tree_index.h"
 
 namespace bustub {
 
 /**
- * Construct a new DeleteExecutor instance.
- * @param exec_ctx The executor context
- * @param plan The delete plan to be executed
- * @param child_executor The child executor that feeds the delete
+ * Creates a new index scan executor.
+ * @param exec_ctx the executor context
+ * @param plan the index scan plan to be executed
  */
-DeleteExecutor::DeleteExecutor(ExecutorContext *exec_ctx, const DeletePlanNode *plan,
-                               std::unique_ptr<AbstractExecutor> &&child_executor)
-    : AbstractExecutor(exec_ctx), plan_(plan), child_executor_(std::move(child_executor)) {
+IndexScanExecutor::IndexScanExecutor(ExecutorContext *exec_ctx, const IndexScanPlanNode *plan)
+    : AbstractExecutor(exec_ctx), plan_(plan) {
 }
 
-/** Initialize the delete */
-void DeleteExecutor::Init() {
-    has_returned_ = false;
-    child_executor_->Init();
+void IndexScanExecutor::Init() {
     table_info_ = exec_ctx_->GetCatalog()->GetTable(plan_->table_oid_);
+    table_iterator_.emplace(table_info_->table_->MakeIterator());
+
+    auto index_info = exec_ctx_->GetCatalog()->GetIndex(plan_->index_oid_);
+    tree_ = dynamic_cast<BPlusTreeIndexForTwoIntegerColumn*>(index_info->index_.get());
+    tree_iterator_.emplace(tree_->GetBeginIterator());
 }
 
-/**
- * Yield the number of rows deleted from the table.
- * @param[out] tuple_batch The tuple batch with one integer indicating the number of rows deleted from the table
- * @param[out] rid_batch The next tuple RID batch produced by the delete (ignore, not used)
- * @param batch_size The number of tuples to be included in the batch (default: BUSTUB_BATCH_SIZE)
- * @return `true` if a tuple was produced, `false` if there are no more tuples
- *
- * NOTE: DeleteExecutor::Next() does not use the `rid_batch` out-parameter.
- * NOTE: DeleteExecutor::Next() returns true with the number of deleted rows produced only once.
- */
-auto DeleteExecutor::Next(std::vector<bustub::Tuple> *tuple_batch, std::vector<bustub::RID> *rid_batch,
-                          size_t batch_size) -> bool {
+auto IndexScanExecutor::Next(std::vector<bustub::Tuple> *tuple_batch, std::vector<bustub::RID> *rid_batch,
+                             size_t batch_size) -> bool {
     tuple_batch->clear();
     rid_batch->clear();
-    
-    int inserted_tuple_count = 0;
-    auto child_tuple_batch = std::vector<bustub::Tuple>{};
-    auto child_rid_batch = std::vector<bustub::RID>{};
-
-    auto table_indexes = exec_ctx_->GetCatalog()->GetTableIndexes(table_info_->name_);
-    while (child_executor_->Next(&child_tuple_batch, &child_rid_batch, batch_size)) {
-        for (const auto& tuple: child_tuple_batch) {
-            // mark tuple as delete
-            table_info_->table_->UpdateTupleMeta(TupleMeta{.ts_=0, .is_deleted_=false}, tuple.GetRid());
-
-            // delete the index
-            for (const auto& index_info: table_indexes) {
-                auto index_key = tuple.KeyFromTuple(table_info_->schema_, index_info->key_schema_, index_info->index_->GetKeyAttrs());
-                index_info->index_->DeleteEntry(index_key, tuple.GetRid(), exec_ctx_->GetTransaction());
-            }
+    tuple_batch->reserve(batch_size);
+    rid_batch->reserve(batch_size);
 
 
-        }
-    }
 }
 
 }  // namespace bustub

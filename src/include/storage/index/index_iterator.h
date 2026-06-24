@@ -42,6 +42,9 @@ class IndexIterator {
   IndexIterator(std::shared_ptr<TracedBufferPoolManager> bpm, const KeyComparator &comparator, ReadPageGuard leaf_guard,
                 page_id_t page_id, const std::optional<KeyType> &key);
 
+  IndexIterator(IndexIterator &&other) noexcept = default;
+  IndexIterator &operator=(IndexIterator &&other) noexcept = default;
+
   auto IsEnd() -> bool;
 
   auto operator*() -> std::pair<const KeyType &, const ValueType &>;

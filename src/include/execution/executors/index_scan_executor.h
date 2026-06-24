@@ -48,7 +48,16 @@ class IndexScanExecutor : public AbstractExecutor {
   /** table info */
   std::shared_ptr<TableInfo> table_info_;
 
+  /** index info */
+  std::shared_ptr<IndexInfo> index_info_;
+
   /** Table iterator of the queried table */
   std::optional<TableIterator> table_iterator_;
+
+  /** BPlusTreeForTheIndex */
+  BPlusTreeIndexForTwoIntegerColumn *tree_{nullptr};
+
+  /** Iterator for tree_ */
+  std::optional<BPlusTreeIndexIteratorForTwoIntegerColumn> tree_iterator_{};
 };
 }  // namespace bustub
