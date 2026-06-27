@@ -12,6 +12,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -51,13 +52,19 @@ class IndexScanExecutor : public AbstractExecutor {
   /** index info */
   std::shared_ptr<IndexInfo> index_info_;
 
-  /** Table iterator of the queried table */
-  std::optional<TableIterator> table_iterator_;
-
   /** BPlusTreeForTheIndex */
   BPlusTreeIndexForTwoIntegerColumn *tree_{nullptr};
 
-  /** Iterator for tree_ */
+  /** Stateful vector of RID, used for point look up */
+  std::vector<RID> rid_{};
+
+  /** Position tracker for rid_ */
+  size_t rid_pos_{0};
+
+  /** Iterator for tree_, used for ordered scan*/
   std::optional<BPlusTreeIndexIteratorForTwoIntegerColumn> tree_iterator_{};
+
+  // @brief return true if this index scan using point look up or ordered scan
+  auto isPointLookup() -> bool;
 };
 }  // namespace bustub

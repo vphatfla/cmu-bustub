@@ -207,14 +207,15 @@ make submit-p3
 - Marks tuples as deleted via `UpdateTupleMeta({0, true}, rid)`, deletes index entries
 - Returns single count tuple with `has_returned_` flag
 
-### IndexScan — Next Up
-- Cast index to `BPlusTreeIndexForTwoIntegerColumn` and store as `tree_` member
+### IndexScan — Done
+- Members: `table_info_`, `index_info_`, `tree_` (cast to `BPlusTreeIndexForTwoIntegerColumn`), `rid_`/`rid_pos_` (point lookup), `tree_iterator_` (ordered scan)
 - Two modes based on `pred_keys_`:
-  - **`pred_keys_` non-empty → point lookup**: evaluate each key expr with `Evaluate(nullptr, ...)`, build `Tuple({value}, &key_schema)`, call `tree_->ScanKey()` to get RIDs, fetch tuples from table heap
-  - **`pred_keys_` empty → ordered scan**: `tree_->GetBeginIterator()`, store iterator as `std::optional` member, stream tuples across `Next()` calls (same pattern as SeqScan)
-- `ScanKey` available on both base `Index` and `BPlusTreeIndex` — use `tree_->ScanKey()` for consistency
-- Skip deleted tuples in both modes
+  - **`pred_keys_` non-empty → point lookup**: each pred_key is a separate `ScanKey` call (union/OR semantics, not intersection). Build `Tuple{{val}, &key_schema_}` per key, append RIDs to `rid_`. Track position with `rid_pos_` across `Next()` calls.
+  - **`pred_keys_` empty → ordered scan**: `tree_->GetBeginIterator()`, dereference iterator with `*iter` → `pair<Key&, RID&>`, advance with `++iter`
+- Skip deleted tuples (`meta.is_deleted_`) in both modes via `GetTuple(rid)` → `[meta, tuple]`
+- `Next()` must loop until batch is non-empty or source exhausted (deleted tuples can cause empty batches)
 - `filter_predicate_` — ignore for now; handle when implementing the optimizer rule
+- No `TableIterator` needed — tuples fetched directly via `GetTuple(rid)`
 
 ### P3 Patterns Learned
 - **Modification executors (Insert/Delete/Update)** return a single integer tuple with the row count, not the actual tuples
@@ -226,6 +227,8 @@ make submit-p3
 - **`std::optional<TableIterator>`**: use for members with no default constructor, init via `emplace()` in `Init()`
 - **Update = delete + insert**: mark old tuple deleted, evaluate `target_expressions_` to build new tuple, insert new tuple
 - **Filter predicate**: only SeqScan needs to check it; Insert/Update/Delete receive pre-filtered tuples from child
+- **`Next()` empty-batch guard**: when manually skipping deleted tuples, wrap in outer loop so `Next()` never returns `true` with an empty batch — keep iterating until batch has tuples or source is exhausted, then `return !tuple_batch->empty()`
+- **`pred_keys_` is OR (union)**: each entry is a separate point lookup key; AND predicates are not converted to IndexScan by the optimizer
 
 ---
 

@@ -30,10 +30,24 @@ IndexScanExecutor::IndexScanExecutor(ExecutorContext *exec_ctx, const IndexScanP
 
 void IndexScanExecutor::Init() {
   table_info_ = exec_ctx_->GetCatalog()->GetTable(plan_->table_oid_);
-  table_iterator_.emplace(table_info_->table_->MakeIterator());
 
   index_info_ = exec_ctx_->GetCatalog()->GetIndex(plan_->index_oid_);
   tree_ = dynamic_cast<BPlusTreeIndexForTwoIntegerColumn *>(index_info_->index_.get());
+
+  // executor to use contant point look up via plan.pred_keys
+  if (!plan_->pred_keys_.empty()) {
+    rid_.clear();
+    rid_pos_ = 0;
+    // use constant point look up index
+    for (const auto &pred_key : plan_->pred_keys_) {
+      auto key_value = pred_key->Evaluate(nullptr, GetOutputSchema());
+      auto index_key_tuple = Tuple{std::vector<Value>{key_value}, &index_info_->key_schema_};
+      tree_->ScanKey(index_key_tuple, &rid_, exec_ctx_->GetTransaction());
+    }
+    return;
+  }
+
+  // executor to be used for ordered scann - reset tree iterator
   tree_iterator_.emplace(tree_->GetBeginIterator());
 }
 
@@ -44,17 +58,41 @@ auto IndexScanExecutor::Next(std::vector<bustub::Tuple> *tuple_batch, std::vecto
   tuple_batch->reserve(batch_size);
   rid_batch->reserve(batch_size);
 
-  if (!plan_->pred_keys_.empty()) {
-    // use constant point look up index
-    auto key_values = std::vector<Value>{};
-    for (const auto &pred_key : plan_->pred_keys_) {
-      // get the constant value in the pred
-      key_values.emplace_back(pred_key->Evaluate(nullptr, GetOutputSchema()));
+  if (isPointLookup()) {
+    if (rid_pos_ >= rid_.size()) {
+      return false;
     }
+    while (batch_size > 0 && rid_pos_ < rid_.size()) {
+      auto rid = rid_[rid_pos_];
 
-    auto index_key_tuple = Tuple{key_values, &index_info_->key_schema_};
-    // todo scan key here
+      auto [meta, tuple] = table_info_->table_->GetTuple(rid);
+      if (!meta.is_deleted_) {
+        rid_batch->emplace_back(rid);
+        tuple_batch->emplace_back(tuple);
+        batch_size -= 1;
+      }
+      rid_pos_ += 1;
+    }
+  } else {
+    // ordered scan
+    if (tree_iterator_->IsEnd()) {
+      return false;
+    }
+    while (batch_size > 0 && !tree_iterator_->IsEnd()) {
+      auto [k, rid] = *tree_iterator_.value();
+
+      auto [meta, tuple] = table_info_->table_->GetTuple(rid);
+      if (!meta.is_deleted_) {
+        rid_batch->emplace_back(rid);
+        tuple_batch->emplace_back(tuple);
+        batch_size -= 1;
+      }
+      ++tree_iterator_.value();
+    }
   }
+  return !tuple_batch->empty();
 }
+
+auto IndexScanExecutor::isPointLookup() -> bool { return !plan_->pred_keys_.empty(); }
 
 }  // namespace bustub
