@@ -14,7 +14,7 @@
 
 | Task | Description | Status |
 |------|-------------|--------|
-| Task #1 | Access Method Executors (SeqScan, Insert, Update, Delete, IndexScan, optimizer) | ⬜ TODO |
+| Task #1 | Access Method Executors (SeqScan, Insert, Update, Delete, IndexScan, optimizer) | ✅ DONE |
 | Task #2 | Aggregation & Join Executors (Aggregation, NLJ, NestedIndexJoin) | ⬜ TODO |
 | Task #3 | Hash Join & Optimization (IntermediateResultPage, HashJoin, NLJ→HashJoin optimizer) | ⬜ TODO |
 | Task #4 | Sort, Limit & Window Functions (ExternalMergeSort, Limit, WindowFunction) | ⬜ TODO |
@@ -216,6 +216,16 @@ make submit-p3
 - `Next()` must loop until batch is non-empty or source exhausted (deleted tuples can cause empty batches)
 - `filter_predicate_` — ignore for now; handle when implementing the optimizer rule
 - No `TableIterator` needed — tuples fetched directly via `GetTuple(rid)`
+
+### SeqScan→IndexScan Optimizer — Done
+- File: `src/optimizer/seqscan_as_indexscan.cpp`
+- Runs after `OptimizeMergeFilterScan` (filter already merged into SeqScan's `filter_predicate_`)
+- Helper: `SplitComparisonExpr(expr)` → `optional<pair<col_expr_ref, const_expr_ref>>` — handles both `col = const` and `const = col` (flipped)
+- **Case 1: `ComparisonExpression(Equal)`** → call `SplitComparisonExpr`, extract col_idx via `ColumnValueExpression::GetColIdx()`, call `MatchIndex(table_name, col_idx)`, create `IndexScanPlanNode` with one `pred_key`
+- **Case 2: `LogicExpression(Or)`** → call `SplitComparisonExpr` on both children, verify same `GetColIdx()`, call `MatchIndex`, create `IndexScanPlanNode` with two `pred_keys`
+- **Skip**: AND predicates, range comparisons, cross-column OR, non-equality — keep as SeqScan
+- `pred_keys_` are `AbstractExpressionRef` (shared_ptr to `ConstantValueExpression`) — reuse existing shared_ptrs from the expression tree, don't construct new ones
+- `MatchIndex(table_name, col_idx)` returns `optional<tuple<index_oid, index_name>>` — checks if any index has `key_attrs == {col_idx}`
 
 ### P3 Patterns Learned
 - **Modification executors (Insert/Delete/Update)** return a single integer tuple with the row count, not the actual tuples
