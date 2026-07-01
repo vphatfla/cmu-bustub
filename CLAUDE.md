@@ -242,6 +242,28 @@ make submit-p3
 
 ---
 
+## TODO: Fix p3.05 — Nested OR in SeqScan→IndexScan Optimizer
+
+**Test**: `p3.05-index-scan-btree.slt` line 124: `select * from t1 where v2 = 10 or v2 = 20 or v2 = 30 or v2 = 40`
+**Error**: "IndexScan not found" — optimizer doesn't convert this to IndexScan
+
+**Root cause**: The current optimizer only handles flat 2-way OR (`col=x OR col=y`). The parser builds nested OR trees for 3+ conditions:
+```
+        OR
+       /  \
+      OR   (v2=40)
+     /  \
+    OR   (v2=30)
+   /  \
+(v2=10) (v2=20)
+```
+
+**Fix needed**: Add a recursive `FlattenOrExpr` helper that walks nested OR trees and collects all `col=const` equalities into a single `pred_keys` vector. Must verify all leaves reference the same column. If any leaf is not a valid equality or references a different column, bail out (keep as SeqScan).
+
+**File**: `src/optimizer/seqscan_as_indexscan.cpp`
+
+---
+
 ## Known Issues
 
 ### ASAN Hangs on macOS ARM64

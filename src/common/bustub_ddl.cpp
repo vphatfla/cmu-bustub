@@ -76,7 +76,7 @@ void BusTubInstance::HandleCreateStatement(Transaction *txn, const CreateStateme
     }
 
     // We compute the size (in bytes) of the index key
-    uint32_t key_size = col_ids.size() * 4;
+    uint32_t key_size = std::max(8u, static_cast<uint32_t>(col_ids.size() * 4));
 
     // We create an index of sufficient size depending on the key size.
     //! NOTE: Currently, we support key sizes of at most 64 bytes.
@@ -152,7 +152,7 @@ void BusTubInstance::HandleIndexStatement(Transaction *txn, const IndexStatement
   }
 
   // We compute the size (in bytes) of the index key
-  uint32_t key_size = col_ids.size() * 4;
+  uint32_t key_size = std::max(8u, static_cast<uint32_t>(col_ids.size() * 4));
 
   // We create an index of sufficient size depending on the key size.
   //! NOTE: Currently, we support key sizes of at most 64 bytes.
