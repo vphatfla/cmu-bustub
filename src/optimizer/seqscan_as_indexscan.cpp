@@ -58,6 +58,41 @@ auto SplitComparisonExpr(AbstractExpressionRef expr)
   }
   return std::nullopt;
 }
+
+
+/*
+ * @brief ResolveExpr heler that will bnreak up the Compare Expr or Logical Or Epxr
+ * @params, expr that needs to be resolved/splitted
+ * @params OUT result_vector to contains one or more pair of AbstractExpressionRef, the left is column expr, the right is value ref in the pair
+ */
+auto ResolveExpr(AbstractExpressionRef expr, std::vector<std::pair<AbstractExpressionRef, AbstractExpressionRef>> *result_vector) -> bool {
+    BUSTUB_ASSERT(result_vector != nullptr, "in param vector can not be null");
+
+    const auto *logic_expr = dynamic_cast<const LogicExpression *>(expr.get());
+
+    if (logic_expr == nullptr) {
+        // this is the last comparison expr in the nested tree
+        auto optional_col_val = SplitComparisonExpr(expr);
+        if (!optional_col_val.has_value()) {
+            return false;
+        }
+        result_vector->emplace_back(std::move(optional_col_val.value()));
+        return true;
+    }
+    
+    if (logic_expr->logic_type_ != LogicType::Or) {
+        return false;
+    }
+    // expr is a logical OR
+    for (const auto& child_expr: logic_expr->children_) {
+        if (!ResolveExpr(child_expr, result_vector)) {
+            return false;     
+        }
+    }
+
+    return true;
+}
+
 /**
  * @brief Optimizes seq scan as index scan if there's an index on a table
  */
@@ -75,46 +110,26 @@ auto Optimizer::OptimizeSeqScanAsIndexScan(const bustub::AbstractPlanNodeRef &pl
     auto expr = seq_plan.filter_predicate_;
     if (expr != nullptr) {
       // assume that this is a single comparsion, e.g WHERE colA = x;
-      auto optional_col_and_const_val = SplitComparisonExpr(expr);
-      if (optional_col_and_const_val.has_value()) {
-        auto [col_expr_ref, const_value_expr_ref] = optional_col_and_const_val.value();
-        auto *column_expr = dynamic_cast<const ColumnValueExpression *>(col_expr_ref.get());
-        BUSTUB_ASSERT(column_expr != nullptr, "dynamic cast failed, unexpected type");
+      auto result_vector = std::vector<std::pair<AbstractExpressionRef, AbstractExpressionRef>>{};
+      if (ResolveExpr(expr, &result_vector)) {
+      if (!result_vector.empty()) {
+          auto *column_expr = dynamic_cast<const ColumnValueExpression*>(result_vector[0].first.get());
+          if (auto index = MatchIndex(seq_plan.table_name_, column_expr->GetColIdx()); index.has_value()){
 
-        if (auto index = MatchIndex(seq_plan.table_name_, column_expr->GetColIdx()); index.has_value()) {
-          auto [index_oid, index_name] = index.value();
-          return std::make_shared<IndexScanPlanNode>(seq_plan.output_schema_, seq_plan.table_oid_, index_oid, nullptr,
-                                                     std::vector<AbstractExpressionRef>{const_value_expr_ref});
-        }
-      } else if (const auto *logic_expr = dynamic_cast<const LogicExpression *>(expr.get()); logic_expr != nullptr) {
-        // logic comparison expr, e.g WHERE colA = x OR colA = y; only handle OR (AND will be treated as seq scan)
-        if (logic_expr->logic_type_ == LogicType::Or) {
-          BUSTUB_ASSERT(logic_expr->children_.size() == 2, "logic OR epr must have exact 2 cmp expr children");
-          auto left_optional_col_const = SplitComparisonExpr(logic_expr->children_[0]);
-          auto right_optional_col_const = SplitComparisonExpr(logic_expr->children_[1]);
+              auto [index_oid, index_name] = index.value();
+              auto const_value_ref_vector = std::vector<AbstractExpressionRef>{};
+              for (auto& p: result_vector) {
 
-          // both left and right children must be EQUAL comparison expression
-          if (left_optional_col_const.has_value() && right_optional_col_const.has_value()) {
-            auto [left_col_expr_ref, left_const_value_expr_ref] = left_optional_col_const.value();
-            auto [right_col_expr_ref, right_const_value_epxr_ref] = right_optional_col_const.value();
-
-            auto *left_col_expr = dynamic_cast<const ColumnValueExpression *>(left_col_expr_ref.get());
-            auto *right_col_expr = dynamic_cast<const ColumnValueExpression *>(right_col_expr_ref.get());
-
-            BUSTUB_ASSERT(left_col_expr != nullptr && right_col_expr != nullptr,
-                          "dynamic cast failed, unexpected type");
-
-            if (left_col_expr->GetColIdx() == right_col_expr->GetColIdx()) {
-              if (auto index = MatchIndex(seq_plan.table_name_, left_col_expr->GetColIdx()); index.has_value()) {
-                auto [index_oid, index_name] = index.value();
-                return std::make_shared<IndexScanPlanNode>(
-                    seq_plan.output_schema_, seq_plan.table_oid_, index_oid, nullptr,
-                    std::vector<AbstractExpressionRef>{left_const_value_expr_ref, right_const_value_epxr_ref});
+                // all pair should have the same column [todo]
+                const_value_ref_vector.emplace_back(std::move(p.second));
               }
-            }
+
+              return std::make_shared<IndexScanPlanNode>(seq_plan.output_schema_, seq_plan.table_oid_, index_oid, nullptr, const_value_ref_vector);
           }
-        }
       }
+      }
+    
+      
     }
   }
   return optimized_plan;
