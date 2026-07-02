@@ -33,7 +33,7 @@ void IndexScanExecutor::Init() {
 
   index_info_ = exec_ctx_->GetCatalog()->GetIndex(plan_->index_oid_);
   tree_ = dynamic_cast<BPlusTreeIndexForTwoIntegerColumn *>(index_info_->index_.get());
-    
+
   BUSTUB_ASSERT(tree_ != nullptr, "tree can not be null");
   // executor to use contant point look up via plan.pred_keys
   if (!plan_->pred_keys_.empty()) {

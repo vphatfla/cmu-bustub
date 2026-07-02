@@ -12,6 +12,7 @@
 
 #include <memory>
 #include <optional>
+#include <tuple>
 #include <utility>
 #include <vector>
 #include "common/macros.h"
@@ -27,13 +28,13 @@
 
 namespace bustub {
 
+using DeComparisonExprType = std::tuple<unsigned int, AbstractExpressionRef, AbstractExpressionRef>;
 /**
  * @brief Convert/Split ComparisonExpression to a pair of ColumnValueExpression and ConstantValueExpression
  * @params shared_ptr of ComparisonExpression
- * @return optional pair of [ColumnValueExpression, ConstantValueExpression] (both are ref/shared_ptr
+ * @return optional tuple of { ColumnIdx, ColumnValueExpressionRef, ConstantValueExpressionRef}
  */
-auto SplitComparisonExpr(AbstractExpressionRef expr)
-    -> std::optional<std::pair<AbstractExpressionRef, AbstractExpressionRef>> {
+auto SplitComparisonExpr(AbstractExpressionRef expr) -> std::optional<DeComparisonExprType> {
   // single constant comparison, e.g WHERE colA = x;
   const auto *comp_expr = dynamic_cast<const ComparisonExpression *>(expr.get());
 
@@ -47,50 +48,49 @@ auto SplitComparisonExpr(AbstractExpressionRef expr)
     auto *constant_value_expr = dynamic_cast<const ConstantValueExpression *>(right.get());
 
     if (column_expr != nullptr && constant_value_expr != nullptr) {
-      return std::make_optional(std::pair<AbstractExpressionRef, AbstractExpressionRef>{left, right});
+      return std::make_optional(DeComparisonExprType{column_expr->GetColIdx(), left, right});
     }
     // try flipping in case of WHERE x = colA;
     column_expr = dynamic_cast<const ColumnValueExpression *>(right.get());
     constant_value_expr = dynamic_cast<const ConstantValueExpression *>(left.get());
     if (column_expr != nullptr && constant_value_expr != nullptr) {
-      return std::make_optional(std::pair<AbstractExpressionRef, AbstractExpressionRef>{right, left});
+      return std::make_optional(DeComparisonExprType{column_expr->GetColIdx(), right, left});
     }
   }
   return std::nullopt;
 }
 
-
 /*
  * @brief ResolveExpr heler that will bnreak up the Compare Expr or Logical Or Epxr
  * @params, expr that needs to be resolved/splitted
- * @params OUT result_vector to contains one or more pair of AbstractExpressionRef, the left is column expr, the right is value ref in the pair
+ * @params OUT result_vector of tuples, tuple = {ColumnIdx, ColumnValueExpressionRef, ConstantValueExpressionRef}
  */
-auto ResolveExpr(AbstractExpressionRef expr, std::vector<std::pair<AbstractExpressionRef, AbstractExpressionRef>> *result_vector) -> bool {
-    BUSTUB_ASSERT(result_vector != nullptr, "in param vector can not be null");
+auto ResolveExpr(AbstractExpressionRef expr, std::vector<DeComparisonExprType> *result_vector) -> bool {
+  BUSTUB_ASSERT(result_vector != nullptr, "in param vector can not be null");
 
-    const auto *logic_expr = dynamic_cast<const LogicExpression *>(expr.get());
+  const auto *logic_expr = dynamic_cast<const LogicExpression *>(expr.get());
 
-    if (logic_expr == nullptr) {
-        // this is the last comparison expr in the nested tree
-        auto optional_col_val = SplitComparisonExpr(expr);
-        if (!optional_col_val.has_value()) {
-            return false;
-        }
-        result_vector->emplace_back(std::move(optional_col_val.value()));
-        return true;
+  if (logic_expr == nullptr) {
+    // this is the last comparison expr in the nested tree
+    auto optional_col_val = SplitComparisonExpr(expr);
+    if (!optional_col_val.has_value()) {
+      return false;
     }
-    
-    if (logic_expr->logic_type_ != LogicType::Or) {
-        return false;
-    }
-    // expr is a logical OR
-    for (const auto& child_expr: logic_expr->children_) {
-        if (!ResolveExpr(child_expr, result_vector)) {
-            return false;     
-        }
-    }
-
+    result_vector->emplace_back(std::move(optional_col_val.value()));
     return true;
+  }
+
+  if (logic_expr->logic_type_ != LogicType::Or) {
+    return false;
+  }
+  // expr is a logical OR
+  for (const auto &child_expr : logic_expr->children_) {
+    if (!ResolveExpr(child_expr, result_vector)) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 /**
@@ -110,26 +110,30 @@ auto Optimizer::OptimizeSeqScanAsIndexScan(const bustub::AbstractPlanNodeRef &pl
     auto expr = seq_plan.filter_predicate_;
     if (expr != nullptr) {
       // assume that this is a single comparsion, e.g WHERE colA = x;
-      auto result_vector = std::vector<std::pair<AbstractExpressionRef, AbstractExpressionRef>>{};
+      auto result_vector = std::vector<DeComparisonExprType>{};
       if (ResolveExpr(expr, &result_vector)) {
-      if (!result_vector.empty()) {
-          auto *column_expr = dynamic_cast<const ColumnValueExpression*>(result_vector[0].first.get());
-          if (auto index = MatchIndex(seq_plan.table_name_, column_expr->GetColIdx()); index.has_value()){
+        if (!result_vector.empty()) {
+          auto [first_col_id, col_expr_ref, const_value_expr_ref] = result_vector[0];
 
-              auto [index_oid, index_name] = index.value();
-              auto const_value_ref_vector = std::vector<AbstractExpressionRef>{};
-              for (auto& p: result_vector) {
+          if (auto index = MatchIndex(seq_plan.table_name_, first_col_id); index.has_value()) {
+            auto const_value_ref_vector =
+                std::vector<AbstractExpressionRef>{};  // used to construct the index scan plan
+                                                       //
+            auto [index_oid, index_name] = index.value();
 
-                // all pair should have the same column [todo]
-                const_value_ref_vector.emplace_back(std::move(p.second));
+            for (auto &p : result_vector) {
+              // all pair should have the same column id
+              auto [c_col_id, c_col_expr_ref, c_const_value_expr_ref] = p;
+              if (c_col_id != first_col_id) {
+                return optimized_plan;  // all column idx are not consistent
               }
-
-              return std::make_shared<IndexScanPlanNode>(seq_plan.output_schema_, seq_plan.table_oid_, index_oid, nullptr, const_value_ref_vector);
+              const_value_ref_vector.emplace_back(std::move(c_const_value_expr_ref));
+            }
+            return std::make_shared<IndexScanPlanNode>(seq_plan.output_schema_, seq_plan.table_oid_, index_oid, nullptr,
+                                                       const_value_ref_vector);
           }
+        }
       }
-      }
-    
-      
     }
   }
   return optimized_plan;
