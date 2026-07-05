@@ -12,9 +12,11 @@
 
 #pragma once
 
+#include <cstddef>
 #include <memory>
 #include <vector>
 
+#include "common/rid.h"
 #include "execution/executor_context.h"
 #include "execution/executors/abstract_executor.h"
 #include "execution/plans/nested_loop_join_plan.h"
@@ -42,6 +44,36 @@ class NestedLoopJoinExecutor : public AbstractExecutor {
  private:
   /** The NestedLoopJoin plan node to be executed. */
   const NestedLoopJoinPlanNode *plan_;
+
+  /** Left child executor, by convention this is the smaller table */
+  std::unique_ptr<AbstractExecutor> left_executor_;
+
+  /** Right child executor */
+  std::unique_ptr<AbstractExecutor> right_executor_;
+
+  /** Tuples from the left table, max size = batch size, smaller table-> used for streaming*/
+  std::vector<Tuple> left_tuples_{};
+
+  /** Tuples from the left table, max size = batch size, smaller table -> used for streaming */
+  std::vector<RID> left_rids_{};
+
+  /** Index POS tracker for the tuple from left table in the left_tuples_batch */
+  size_t left_pos_{0};
+
+  /** All the tuple of the right table, materialized at Init() */
+  std::vector<Tuple> right_tuples_{};
+
+  /** All the rid of the right table, materialized at Init() */
+  std::vector<RID> right_rids_{};
+
+  /** Index POS tracker for the tuple from right table in the right_tuples */
+  size_t right_pos_{0};
+
+  /** bool track to check if the left tuple was matched with any right tuple, used for left join */
+  bool did_left_match{false};
+
+  /** @brief private helper to construct the tuple given this executor output schema */
+  auto ConstructOutTuple(const Tuple &left, const Tuple *right) -> Tuple;
 };
 
 }  // namespace bustub

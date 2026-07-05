@@ -15,7 +15,7 @@
 | Task | Description | Status |
 |------|-------------|--------|
 | Task #1 | Access Method Executors (SeqScan, Insert, Update, Delete, IndexScan, optimizer) | ✅ DONE |
-| Task #2 | Aggregation & Join Executors (Aggregation, NLJ, NestedIndexJoin) | ⬜ TODO |
+| Task #2 | Aggregation & Join Executors (Aggregation ✅, NLJ ✅, NestedIndexJoin) | 🔨 IN PROGRESS |
 | Task #3 | Hash Join & Optimization (IntermediateResultPage, HashJoin, NLJ→HashJoin optimizer) | ⬜ TODO |
 | Task #4 | Sort, Limit & Window Functions (ExternalMergeSort, Limit, WindowFunction) | ⬜ TODO |
 
@@ -227,6 +227,26 @@ make submit-p3
 - `pred_keys_` are `AbstractExpressionRef` (shared_ptr to `ConstantValueExpression`) — reuse existing shared_ptrs from the expression tree, don't construct new ones
 - `MatchIndex(table_name, col_idx)` returns `optional<tuple<index_oid, index_name>>` — checks if any index has `key_attrs == {col_idx}`
 
+### Aggregation — Done (p3.07/p3.08/p3.09 PASS)
+- `CombineAggregateValues` implemented for all 5 types; NULL-aware (skip null input except CountStar).
+- `Init()`: drain child in batches → `aht_.InsertCombine(MakeAggregateKey, MakeAggregateValue)` per tuple → set `aht_iterator_ = aht_.Begin()`.
+- **Empty-table + no GROUP BY edge case**: after draining, `if (plan_->GetGroupBys().empty() && aht_.Begin() == aht_.End()) aht_.InsertInitial(AggregateKey{});`. Added `InsertInitial(key)` helper to `SimpleAggregationHashTable` that inserts the RAW `GenerateInitialAggregateValue()` (NOT `InsertCombine`, which would bump CountStar to 1). Handling this in `Init()` (not `Next()`) means `Next()` needs no flag — it emits the one default row exactly once, then hits `End()`.
+- **GROUP BY works with zero special-casing**: `MakeAggregateKey` builds a key from all group-by exprs; empty key = whole-table aggregate; non-empty key = one bucket per group. Multi-column + NULL keys handled by `AggregateKey::operator==` and `std::hash<AggregateKey>` (NULLs group together).
+- **HAVING** is a separate Filter executor above Aggregation — nothing to do in the aggregation executor.
+- `Next()` emits `group_bys_ ++ aggregates_` (matches output schema column order).
+- Build target is `make sqllogictest` (NOT `bustub-sqllogictest`); binary at `build/bin/bustub-sqllogictest`.
+
+### NestedLoopJoin — Done (p3.11/p3.12 PASS; p3.10 NLJ queries + nlj_init_check PASS)
+- **Design**: materialize the RIGHT (inner) side fully in `Init()`; STREAM the LEFT (outer) side one buffered batch at a time in `Next()`. Left=outer=child0=`GetLeftPlan()`, right=inner=child1=`GetRightPlan()` (fixed by planner; factory passes them in that order). NLJ is NOT graded on memory (only HashJoin/ExternalMergeSort spill), so materializing the inner is fine even if it's the larger table.
+- **Init() materialization gotcha**: child `Next()` CLEARS its output vector each call, so you CANNOT accumulate by passing `right_tuples_` directly to repeated `Next()` calls (it ends up empty). Use a temp `batch_tuples`/`batch_rids` and `right_tuples_.insert(end, batch.begin(), batch.end())` each iteration.
+- **Init() MUST reset** `left_pos_=0, right_pos_=0, did_left_match=false` (not just clear vectors) — else re-execution (p3.12) resumes `right_pos_` mid-scan and skips right tuples.
+- **Next() resume state (members)**: `left_tuples_`+`left_pos_` (buffered left batch + index), `right_pos_` (scan position in materialized right for current left tuple), `did_left_match` (LEFT-join null-pad flag). Cleanest loop = process ONE right tuple per iteration, cap via `while (tuple_batch->size() < batch_size)`.
+- **`right_pos_` is needed** because one left tuple can match more rights than `batch_size` → must pause mid-inner-scan and resume without duplicating.
+- **Advance `left_pos_` ONLY when `right_pos_ >= right_tuples_.size()`** (scan complete), NOT on a batch-full pause. Reset `did_left_match=false` at the SAME point (advance), and KEEP it across a pause (member persists).
+- **LEFT join**: after scanning all rights for a left tuple, if `!did_left_match && GetJoinType()==LEFT`, emit `left ++ NULL-pad`. Match = `!v.IsNull() && v.GetAs<bool>()` (predicate NULL is NOT a match).
+- **Output tuple** = left cols ++ right cols (see `InferJoinSchema` in plan_node.cpp: left first, then right). Build via helper `ConstructOutTuple(left, right*)`: loop `left_schema.GetColumnCount()` then `right_schema.GetColumnCount()` — use `GetColumnCount()` NOT `Tuple::GetLength()` (that's BYTE length!). For null-pad pass `right=nullptr` and use `ValueFactory::GetNullValueByType(right_schema.GetColumn(i).GetType())`. Bound loop by schema count so `nullptr` is never dereferenced. Emit dummy RID (`RID{}`).
+- **p3.10 line 54 requires NestedIndexJoin**: `set force_optimizer_starter_rule=yes` + an index on the inner join key makes the optimizer rewrite the join to NestedIndexJoin. So p3.10 won't fully pass until NIJ is implemented.
+
 ### P3 Patterns Learned
 - **Modification executors (Insert/Delete/Update)** return a single integer tuple with the row count, not the actual tuples
 - **`has_returned_` flag**: needed on all modification executors to prevent infinite `Next()` loop; reset in `Init()`
@@ -242,7 +262,57 @@ make submit-p3
 
 ---
 
-## TODO: Fix p3.05 — Nested OR in SeqScan→IndexScan Optimizer
+## Task #2 — Code Recon (verified from source, ready to implement)
+
+### Aggregation (`aggregation_executor.{h,cpp}` + `plans/aggregation_plan.h`)
+- **Header stubs to uncomment**: `SimpleAggregationHashTable aht_;` and `SimpleAggregationHashTable::Iterator aht_iterator_;` (both `// TODO(Student)` commented out).
+- **Already-provided helpers** (do NOT rewrite): `MakeAggregateKey(tuple)`, `MakeAggregateValue(tuple)`, `InsertCombine(key,val)`, `GenerateInitialAggregateValue()`, `Begin()/End()`, `Iterator` with `Key()`/`Val()`/`++`/`==`/`!=`.
+- **`GenerateInitialAggregateValue()` (already correct)**: `CountStarAggregate` → `ValueFactory::GetIntegerValue(0)`; all others → `ValueFactory::GetNullValueByType(TypeId::INTEGER)` (NULL). This is exactly the empty-table behavior.
+- **`CombineAggregateValues(AggregateValue *result, const AggregateValue &input)` — the ONE method to implement**. Switch over `agg_types_[i]`:
+  - `CountStarAggregate`: `result += 1` always (use `.Add(GetIntegerValue(1))`).
+  - `CountAggregate`: if input not null → if result null set to 0 first, then +1 (count of non-null).
+  - `SumAggregate`: if input not null → result null? set=input : result=result.Add(input).
+  - `MinAggregate`: if input not null → result null? set=input : result=result.Min(input).
+  - `MaxAggregate`: if input not null → result null? set=input : result=result.Max(input).
+- **`AggregationType` enum**: `CountStarAggregate, CountAggregate, SumAggregate, MinAggregate, MaxAggregate`.
+- **Plan accessors**: `GetGroupBys()`, `GetAggregates()`, `GetAggregateTypes()`, `OutputSchema()`, `GetChildPlan()`.
+- **Init()**: init child, drain child fully, `aht_.InsertCombine(MakeAggregateKey, MakeAggregateValue)` per tuple; set `aht_iterator_ = aht_.Begin()`. **Empty-table + no group-by edge case**: if table empty AND `GetGroupBys().empty()`, must still emit ONE row = initial aggregate value (CountStar=0, rest NULL). Handle with a flag.
+- **Next()**: iterate `aht_iterator_` != `aht_.End()`, output tuple = group_bys_ ++ aggregates_ concatenated (match OutputSchema column order: group-bys first, then aggregates), advance iterator, fill batch.
+- **`Value` ops**: `.Add`, `.Min`, `.Max`, `.CompareLessThan`→`CmpBool`, `.IsNull()`. `CmpBool` enum: `CmpFalse/CmpTrue/CmpNull` in `type/type.h`.
+
+### NestedLoopJoin (`nested_loop_join_executor.{h,cpp}` + `plans/nested_loop_join_plan.h`)
+- **Header**: must ADD members for `left_executor_` / `right_executor_` (constructor gets them but stub doesn't store). Plus buffering state.
+- **Constructor** already validates join type is INNER or LEFT.
+- **Plan accessors**: `Predicate()`, `GetJoinType()`, `GetLeftPlan()`, `GetRightPlan()`. Left/right schemas via `Get{Left,Right}Plan()->OutputSchema()`.
+- **`JoinType`** (in `binder/table_ref/bound_join_ref.h`): `INVALID=0, LEFT=1, RIGHT=3, INNER=4, OUTER=5`. Only LEFT + INNER needed.
+- **Predicate eval**: `plan_->Predicate()->EvaluateJoin(&left, left_schema, &right, right_schema) -> Value`. Match = `!v.IsNull() && v.GetAs<bool>()`.
+- **Output tuple**: concat left cols then right cols into `vector<Value>`, `Tuple(values, &GetOutputSchema())`. Left-join no-match → right cols = `ValueFactory::GetNullValueByType(right_schema.GetColumn(i).GetType())`.
+- **Design note**: children are batch executors. Simplest correct approach — in `Init()`, fully materialize the RIGHT side into a `std::vector<Tuple>` (right is the inner/rescanned side); stream LEFT via child batches. Track a `left_matched_` bool per left tuple for LEFT join NULL-padding. Careful with batch boundaries (buffer emitted rows in a queue, drain into batch).
+
+### NestedIndexJoin (`nested_index_join_executor.{h,cpp}` + `plans/nested_index_join_plan.h`)
+- **Single child** = outer table (streamed). Inner table is probed via index.
+- **Plan accessors**: `KeyPredicate()`, `GetJoinType()`, `GetInnerTableOid()`, `GetIndexOid()`, `GetIndexName()`, `InnerTableSchema()`, `GetChildPlan()`, `OutputSchema()`.
+- **Init()**: `index_info_ = GetCatalog()->GetIndex(GetIndexOid())`; `table_info_ = GetCatalog()->GetTable(GetInnerTableOid())`. `IndexInfo` has `index_` (unique_ptr<Index>), `key_schema_`. `TableInfo` has `table_` (TableHeap), `schema_`.
+- **Probe**: `Value k = KeyPredicate()->Evaluate(&outer_tuple, outer_schema)`; `Tuple key{{k}, &index_info_->key_schema_}`; `index_info_->index_->ScanKey(key, &rids, txn)`.
+- **Fetch inner**: `auto [meta, tuple] = table_info_->table_->GetTuple(rid); if (!meta.is_deleted_) ...`.
+- **Join**: INNER → emit outer++inner per matching RID; LEFT → if no (non-deleted) match, emit outer ++ NULL-padded inner cols (`InnerTableSchema()` column types).
+
+### Shared batch `Next()` pattern (from seq_scan_executor.cpp:43)
+```cpp
+tuple_batch->clear(); rid_batch->clear();
+tuple_batch->reserve(batch_size); rid_batch->reserve(batch_size);
+while (<source not exhausted> && batch_size > 0) { ... push; batch_size--; }
+return !tuple_batch->empty();
+```
+- Tuple ctor: `Tuple(std::vector<Value> values, const Schema *schema)`.
+- Modification executors use `Value(TypeId::INTEGER, count)`; here we mostly use ValueFactory + concatenated Values.
+- Pipeline breakers (Aggregation) build in `Init()`, emit in `Next()`. Joins can stream.
+
+**Suggested order**: Aggregation → NestedLoopJoin → NestedIndexJoin. Tests: `p3.07-*`..`p3.13-*`.
+
+---
+
+## TODO: Fix p3.05 — Nested OR in SeqScan→IndexScan Optimizer (FIXED — commit 026f069)
 
 **Test**: `p3.05-index-scan-btree.slt` line 124: `select * from t1 where v2 = 10 or v2 = 20 or v2 = 30 or v2 = 40`
 **Error**: "IndexScan not found" — optimizer doesn't convert this to IndexScan
