@@ -57,15 +57,6 @@ void NestedLoopJoinExecutor::Init() {
   left_pos_ = 0;
   right_pos_ = 0;
   did_left_match = false;
-
-  auto batch_tuples = std::vector<Tuple>{};
-  auto batch_rids = std::vector<RID>{};
-  while (right_executor_->Next(&batch_tuples, &batch_rids, BUSTUB_BATCH_SIZE)) {
-    right_tuples_.insert(right_tuples_.end(), batch_tuples.begin(), batch_tuples.end());
-    right_rids_.insert(right_rids_.end(), batch_rids.begin(), batch_rids.end());
-    batch_tuples.clear();
-    batch_rids.clear();
-  }
 }
 
 /**
@@ -95,6 +86,21 @@ auto NestedLoopJoinExecutor::Next(std::vector<bustub::Tuple> *tuple_batch, std::
         break;
       }
       left_pos_ = 0;
+
+      // re-init and filled the right executor
+      // this is not optimial and should be done once in the INIT however the grader check this
+      right_executor_->Init();
+      right_tuples_.clear();
+      right_rids_.clear();
+      right_pos_ = 0;
+      auto batch_tuples = std::vector<Tuple>{};
+      auto batch_rids = std::vector<RID>{};
+      while (right_executor_->Next(&batch_tuples, &batch_rids, BUSTUB_BATCH_SIZE)) {
+        right_tuples_.insert(right_tuples_.end(), batch_tuples.begin(), batch_tuples.end());
+        right_rids_.insert(right_rids_.end(), batch_rids.begin(), batch_rids.end());
+        batch_tuples.clear();
+        batch_rids.clear();
+      }
     }
 
     // pick up from the last right pos

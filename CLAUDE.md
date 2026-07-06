@@ -15,7 +15,7 @@
 | Task | Description | Status |
 |------|-------------|--------|
 | Task #1 | Access Method Executors (SeqScan, Insert, Update, Delete, IndexScan, optimizer) | ✅ DONE |
-| Task #2 | Aggregation & Join Executors (Aggregation ✅, NLJ ✅, NestedIndexJoin) | 🔨 IN PROGRESS |
+| Task #2 | Aggregation & Join Executors (Aggregation ✅, NLJ ✅, NestedIndexJoin ✅) | ✅ DONE |
 | Task #3 | Hash Join & Optimization (IntermediateResultPage, HashJoin, NLJ→HashJoin optimizer) | ⬜ TODO |
 | Task #4 | Sort, Limit & Window Functions (ExternalMergeSort, Limit, WindowFunction) | ⬜ TODO |
 
@@ -246,6 +246,22 @@ make submit-p3
 - **LEFT join**: after scanning all rights for a left tuple, if `!did_left_match && GetJoinType()==LEFT`, emit `left ++ NULL-pad`. Match = `!v.IsNull() && v.GetAs<bool>()` (predicate NULL is NOT a match).
 - **Output tuple** = left cols ++ right cols (see `InferJoinSchema` in plan_node.cpp: left first, then right). Build via helper `ConstructOutTuple(left, right*)`: loop `left_schema.GetColumnCount()` then `right_schema.GetColumnCount()` — use `GetColumnCount()` NOT `Tuple::GetLength()` (that's BYTE length!). For null-pad pass `right=nullptr` and use `ValueFactory::GetNullValueByType(right_schema.GetColumn(i).GetType())`. Bound loop by schema count so `nullptr` is never dereferenced. Emit dummy RID (`RID{}`).
 - **p3.10 line 54 requires NestedIndexJoin**: `set force_optimizer_starter_rule=yes` + an index on the inner join key makes the optimizer rewrite the join to NestedIndexJoin. So p3.10 won't fully pass until NIJ is implemented.
+
+### NestedLoopJoin — the `nlj_init_check` gotcha (p3.10 line 309+)
+- The grader's `ensure:nlj_init_check` asserts `right->GetInitCount() + 1 >= left->GetNextCount()` (execution_engine.h PerformChecks). It FORCES you to re-`Init()` the right executor once per left `Next()` call (i.e., per left BATCH), not once total.
+- **`BUSTUB_BATCH_SIZE = 20`**. So a left table > 20 rows needs multiple `left->Next()` calls; materializing right only once in `Init()` → `right_init=1` → check fails (`1+1 >= 6` false). Tables ≤ 20 rows pass by accident.
+- **Fix**: move right materialization OUT of `Init()` and INTO the left-refill block in `Next()`. Each time `left_executor_->Next()` succeeds: `right_executor_->Init(); right_tuples_.clear(); right_rids_.clear(); right_pos_ = 0;` THEN re-drain right. The `Init()` per batch satisfies the check; the `clear()` is CRITICAL (without it `right_tuples_` accumulates one full copy of the right table per batch → duplicate output rows for non-first tuples in batches ≥2). This is functionally block-NLJ (re-scan inner per outer batch) — same results, just conforms to the required re-Init pattern.
+- Results-wise materialize-once is also correct, but the check forbids it (a child executor is a single-use stream; re-reading requires re-`Init()`; the grader wants to see that).
+
+### NestedIndexJoin — Done (p3.13 PASS; unblocks p3.10 line 54)
+- **Design**: stream the OUTER via `child_executor_` (the single child = outer table); probe the inner table's index on-demand per outer tuple. NO materialization of the inner side. Init only caches handles: `child_executor_->Init()`, `inner_table_info_ = GetCatalog()->GetTable(plan_->GetInnerTableOid())`, `inner_index_info_ = GetCatalog()->GetIndex(plan_->GetIndexOid())`. Both return `std::shared_ptr<TableInfo>`/`shared_ptr<IndexInfo>` (NOT raw pointers).
+- **No B+Tree cast needed**: `ScanKey` is virtual on the base `Index` class, so `inner_index_info_->index_->ScanKey(...)` works polymorphically. (IndexScan needed the `BPlusTreeIndexForTwoIntegerColumn` cast only for the ordered-scan iterator, which isn't on the base class. NIJ does pure point lookups.)
+- **Build the probe key**: `Value k = plan_->KeyPredicate()->Evaluate(&outer_tuple, child_executor_->GetOutputSchema());` then `Tuple key{{k}, &inner_index_info_->key_schema_};` then `index_->ScanKey(key, &inner_rids_, exec_ctx_->GetTransaction())`. KeyPredicate reads a column FROM the outer tuple → schema+tuple are REQUIRED (unlike IndexScan's constant key where they're ignored). Key tuple built with the INDEX's `key_schema_`.
+- **Resume state** (members): outer buffer + `outter_tuple_pos_`; per-outer-tuple `inner_rids_` + `inner_rid_pos_`; `did_outter_tuple_match_`; `should_fetch_inner_rids_` (probe-once flag = NIJ analog of NLJ pause/resume). Probe once per outer tuple; on batch-full pause, keep `should_fetch=false` so you DON'T re-probe on resume.
+- **Deleted-tuple skip is MANDATORY here** (unlike NLJ): NIJ fetches inner tuples via `inner_table_info_->table_->GetTuple(rid)` DIRECTLY from the heap, bypassing the pipeline — so it must replicate SeqScan's `is_deleted_` skip itself. Advance `inner_rid_pos_` even for deleted RIDs (else infinite loop).
+- **`did_outter_tuple_match_` (not `inner_rids_.empty()`) drives LEFT null-pad**: a non-empty RID list can still yield 0 emits if all matches are deleted, so track emitted-non-deleted-matches. Reset it in the probe block (per outer tuple), keep it across a pause.
+- **Multiple RIDs per outer tuple**: duplicate index keys → multiple RIDs → multiple output rows (bag semantics, correct — never dedup). Re-probe on-demand per outer tuple even for repeated keys (each outer row is an independent join).
+- **NIJ has no `nlj_init_check`** (single child, no left/right pair) — so the per-batch re-Init dance doesn't apply.
 
 ### P3 Patterns Learned
 - **Modification executors (Insert/Delete/Update)** return a single integer tuple with the row count, not the actual tuples
