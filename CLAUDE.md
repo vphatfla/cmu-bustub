@@ -17,7 +17,18 @@
 | Task #1 | Access Method Executors (SeqScan, Insert, Update, Delete, IndexScan, optimizer) | ✅ DONE |
 | Task #2 | Aggregation & Join Executors (Aggregation ✅, NLJ ✅, NestedIndexJoin ✅) | ✅ DONE |
 | Task #3 | Hash Join & Optimization (IntermediateResultPage, HashJoin, NLJ→HashJoin optimizer) | ⬜ TODO |
-| Task #4 | Sort, Limit & Window Functions (ExternalMergeSort, Limit, WindowFunction) | ⬜ TODO |
+| Task #4 | Sort, Limit, TopN & Window Functions (ExternalMergeSort, Limit, TopN, Sort+Limit→TopN, WindowFunction) | ⬜ TODO |
+
+### Verified State (2026-07-08 — read from source, not cache)
+- **Tasks #1 & #2**: fully implemented & verified (9 executors + SeqScan→IndexScan optimizer). Only cosmetic comment typos (`outter`, `experission`, `comparsion`, `bnreak`).
+- **Task #3**: ALL stubs — `intermediate_result_page.h` (empty class), `hash_join_executor.cpp` (ctor/Init/Next `UNIMPLEMENTED`), `nlj_as_hash_join.cpp` (returns plan unchanged). `hash_join_plan.h` is READY: `LeftJoinKeyExpressions()`, `RightJoinKeyExpressions()`, `GetJoinType()`, `GetLeftPlan()`, `GetRightPlan()`.
+- **Task #4**: ALL stubs — `execution_common.cpp` (`TupleComparator::operator()`→false, `GenerateSortKey()`→{}), `external_merge_sort_executor.{h,cpp}` (Iterator + ctor/Init/Next `UNIMPLEMENTED`, only `template class ...<2>` instantiated), `limit_executor.cpp`, `topn_executor.cpp` (+`GetNumInHeap`), `topn_per_group_executor.cpp`, `window_function_executor.cpp` (ctor done, Init throws, Next→false), `sort_limit_as_topn.cpp` (returns plan unchanged).
+
+### Untracked components discovered (not in original task list)
+- **TopN**: `src/execution/topn_executor.cpp` (has `GetNumInHeap()`) + `src/optimizer/sort_limit_as_topn.cpp` (Sort+Limit→TopN rule). Tested by `p3.17-topn.slt`.
+- **TopNPerGroup**: `src/execution/topn_per_group_executor.cpp` (likely leaderboard/window related).
+- **Full p3 test list** (28 files in `test/sql/`): p3.00–p3.13 (Tasks 1&2, passing), p3.14-hash-join, p3.15-multi-way-hash-join, p3.16-sort-limit, p3.17-topn, p3.18/19-integration, p3.20-window-function, p3.22-composite-key-index-scan, p3.leaderboard-q1/q1-index/q1-window/q2/q3.
+- **Run command**: `build/bin/bustub-sqllogictest <test.slt> --verbose -d --in-memory` (build/ is configured; CMakeCache present).
 
 ---
 
