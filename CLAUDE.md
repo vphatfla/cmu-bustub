@@ -16,7 +16,7 @@
 |------|-------------|--------|
 | Task #1 | Access Method Executors (SeqScan, Insert, Update, Delete, IndexScan, optimizer) | ✅ DONE |
 | Task #2 | Aggregation & Join Executors (Aggregation ✅, NLJ ✅, NestedIndexJoin ✅) | ✅ DONE |
-| Task #3 | Hash Join & Optimization (IntermediateResultPage, HashJoin, NLJ→HashJoin optimizer) | ⬜ TODO |
+| Task #3 | Hash Join & Optimization (IntermediateResultPage ✅, HashJoin ⬜, NLJ→HashJoin optimizer ⬜) | 🔶 IN PROGRESS |
 | Task #4 | Sort, Limit, TopN & Window Functions (ExternalMergeSort, Limit, TopN, Sort+Limit→TopN, WindowFunction) | ⬜ TODO |
 
 ### Verified State (2026-07-08 — read from source, not cache)
@@ -273,6 +273,30 @@ make submit-p3
 - **`did_outter_tuple_match_` (not `inner_rids_.empty()`) drives LEFT null-pad**: a non-empty RID list can still yield 0 emits if all matches are deleted, so track emitted-non-deleted-matches. Reset it in the probe block (per outer tuple), keep it across a pause.
 - **Multiple RIDs per outer tuple**: duplicate index keys → multiple RIDs → multiple output rows (bag semantics, correct — never dedup). Re-probe on-demand per outer tuple even for repeated keys (each outer row is an independent join).
 - **NIJ has no `nlj_init_check`** (single child, no left/right pair) — so the per-batch re-Init dance doesn't apply.
+
+### IntermediateResultPage — Done (header-only, verified 2026-07-12)
+- **File**: `src/include/storage/page/intermediate_result_page.h` — **HEADER ONLY, NO .cpp** (none exists, none in CMake; all methods inline; do NOT add a .cpp). Only include reference is `external_merge_sort_executor.h:24`.
+- **Purpose**: on-disk page holding intermediate tuples; SHARED by HashJoin (partitions) AND ExternalMergeSort (sorted runs). Design is content-agnostic (a bag of tuples) — stores tuples only, NOT keys, so both features reuse it.
+- **Layout = slotted page (grows inward), mirrors `TablePage` minus `TupleMeta`**:
+  - Header = `struct Header { page_id_t next_page_id_; uint16_t num_tuples_; }` → **8 bytes** (next_page_id 4 + num_tuples 2 + 2 pad). `next_page_id_` is currently UNUSED (chain tracked externally by `MergeSortRun.pages_`), harmless.
+  - Slot = `using TupleInfo = std::pair<uint16_t, uint16_t>` = `{offset, size}` = **4 bytes**. Slot directory (FAM `TupleInfo tuple_info_[0]`) grows forward from byte 8; tuple payloads grow backward from `BUSTUB_PAGE_SIZE` (=**8192**, NOT 4096).
+  - `sizeof(IntermediateResultPage) == 8` (static_assert). FAM `tuple_info_[0]` + `char page_begin_offset_[0]` are zero-length arrays (0 bytes; the class is a `reinterpret_cast` VIEW over a BPM frame, owns no bytes).
+- **Methods (all inline)**: `Init()` (num_tuples_=0), `GetNumTuples() const`, `GetTuple(idx) const` (bounds-check → `Tuple(RID{}, base+off, size)`), `GetNextTupleOffset(tuple) const` (fullness check → optional offset), `InsertTuple(tuple)` (append; returns bool).
+- **Write** = `memcpy(base + off, tuple.GetData(), tuple.GetLength())` (raw payload, NOT `SerializeTo` which adds a 4-byte length prefix → would double-store size). **Read** = public `Tuple(RID{}, base+off, size)` ctor (does resize+memcpy internally; NO friendship with Tuple needed). `base = reinterpret_cast<char*>(this)`.
+- **Fixes applied during review**: (1) `GetTuple`/`GetNumTuples` MUST be `const` — read path uses `ReadPageGuard::As<T>()` → `const T*`, won't compile otherwise. (2) removed `index < 0` on unsigned (tautology, fails clang-tidy). (3) unsigned-underflow guard in `GetNextTupleOffset`: `if (tuple.GetLength() > new_tuple_end_offset) return nullopt;` BEFORE subtracting (else huge wrap bypasses the `<` check → garbage offset). (4) added `#include <cstring>`.
+- **Key infra facts**: BPM uses `ArcReplacer` (not LRU-K). `FrameHeader::data_` (`vector<char>`) holds the raw bytes on the HEAP; `AsMut<T>()` = `reinterpret_cast<T*>(GetDataMut())` and SETS `is_dirty_=true`; `As<T>()` = const, no dirty. Page classes own NO bytes — `this` IS the frame pointer.
+
+### HashJoin — DESIGN CONFIRMED, NOT YET IMPLEMENTED (next session)
+- **Spec** (https://15445.courses.cs.cmu.edu/fall2025/project3/#task3): MUST use **Grace Hash Join** (partition + spill), NOT plain in-memory. Memory budget = *"hash table of up to 4KB tuples"* (ambiguous; most likely **4096 tuples**, no enforcing constant in code → make it a tunable `constexpr kMaxTuplesInMemory`). Output schema = **all left cols ++ all right cols**. Inner + Left join only. Build side is a pipeline breaker.
+- **Files**: `hash_join_executor.{h,cpp}` (header currently only stores `plan_` — must ADD left/right child members + partition/buffer state), `nlj_as_hash_join.cpp`.
+- **Key hashing** (mirror `SimpleAggregationHashTable`): write own `struct HashJoinKey { std::vector<Value> keys_; operator== }` in `namespace bustub` + `std::hash<bustub::HashJoinKey>` in `namespace std` (file scope, before the unordered_map). Build key = evaluate `plan_->LeftJoinKeyExpressions()` / `RightJoinKeyExpressions()` per column via `expr->Evaluate(&tuple, schema)` (single-tuple, NOT EvaluateJoin) → `vector<Value>`. Hash fn = `HashUtil::HashValue(const Value*)` per col + `HashUtil::CombineHashes` (skip NULLs) — exactly the AggregateKey pattern.
+- **NULL semantics DIFFER from AggregateKey**: AggregateKey treats both-NULL as EQUAL (group-by); JOIN needs NULL to NEVER match. Fix: SKIP inserting build (right) tuples whose key has any NULL; a NULL-key left probe then finds nothing → LEFT join null-pads it.
+- **Build/probe choice**: build map from RIGHT partition, drive (outer loop) with LEFT partition. Works for INNER; makes LEFT null-pad trivial (no matched-flags). Uniform for both join types.
+- **Recursive partitioning** (required to fully follow Grace; add after single-level passes): each recursion level MUST use a DIFFERENT hash or same-partition keys collapse → infinite loop. Use `PartitionIndex(key, level, N) = CombineHashes(std::hash<HashJoinKey>{}(key), level) % N` (salt with level). Partition hash ≠ in-memory map hash (independent, fine). Left & right must use SAME partition fn at each level so matches co-locate.
+- **Init() vs Next()**: partition BOTH children + recursion (the size check is the recursion terminator) go in **Init()** (pipeline breaker; repartition = disk-only, memory-safe → produces flat list of leaf partition pairs each fitting ≤ budget). **Next()** builds map for one leaf at a time → STREAM-probe left (do NOT materialize whole left partition; only build/right side must fit) → buffer output → emit `batch_size` → resume. `BUSTUB_BATCH_SIZE=20`.
+- **Confirmed Next() workflow** (per leaf partition x): (1) build `unordered_map<HashJoinKey, vector<Tuple>>` from right pages[x] (skip NULL keys). (2) stream left pages[x] one tuple at a time. (3a) `k=MakeLeftKey(t)`; map lookup is AUTOMATIC (map uses `std::hash<HashJoinKey>`, do NOT re-apply the salted partition hash). (3b) match → emit `left ++ right` per match. (3c) no match + LEFT → emit `left ++ NULLs` (ValueFactory::GetNullValueByType per right col). Process one partition at a time: build → stream-probe → free map → next.
+- **Tests**: p3.14-hash-join.slt, p3.15-multi-way-hash-join.slt. Run: `build/bin/bustub-sqllogictest <test.slt> --verbose -d --in-memory` (build target `make sqllogictest`).
+- **Verify tool caveat**: `WebFetch` fails on the course site with a TLS cert error; use `curl -sL <url>` instead.
 
 ### P3 Patterns Learned
 - **Modification executors (Insert/Delete/Update)** return a single integer tuple with the row count, not the actual tuples

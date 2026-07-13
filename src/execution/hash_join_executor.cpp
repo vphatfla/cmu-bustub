@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "execution/executors/hash_join_executor.h"
+#include <utility>
 #include "common/macros.h"
 
 namespace bustub {
@@ -25,16 +26,26 @@ namespace bustub {
 HashJoinExecutor::HashJoinExecutor(ExecutorContext *exec_ctx, const HashJoinPlanNode *plan,
                                    std::unique_ptr<AbstractExecutor> &&left_child,
                                    std::unique_ptr<AbstractExecutor> &&right_child)
-    : AbstractExecutor(exec_ctx) {
+    : AbstractExecutor(exec_ctx),
+      plan_(plan),
+      left_child_(std::move(left_child)),
+      right_child_(std::move(right_child)) {
   if (plan->GetJoinType() != JoinType::LEFT && plan->GetJoinType() != JoinType::INNER) {
     // Note for Spring 2025: You ONLY need to implement left join and inner join.
     throw bustub::NotImplementedException(fmt::format("join type {} not supported", plan->GetJoinType()));
   }
-  UNIMPLEMENTED("TODO(P3): Add implementation.");
 }
 
 /** Initialize the join */
-void HashJoinExecutor::Init() { UNIMPLEMENTED("TODO(P3): Add implementation."); }
+void HashJoinExecutor::Init() {
+  // pipeline breaker, load all tuples from both children on init
+
+  left_child_->Init();
+  right_child_->Init();
+
+  left_pages_.clear();
+  right_pages_.clear();
+}
 
 /**
  * Yield the next tuple batch from the hash join.
