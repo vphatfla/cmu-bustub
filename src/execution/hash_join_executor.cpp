@@ -21,6 +21,7 @@
 #include "common/util/hash_util.h"
 #include "execution/expressions/abstract_expression.h"
 #include "storage/page/intermediate_result_page.h"
+#include "storage/page/page_guard.h"
 #include "storage/table/tuple.h"
 
 namespace bustub {
@@ -77,11 +78,17 @@ void HashJoinExecutor::InitHashPages(const std::unique_ptr<AbstractExecutor> &ch
   child_hash_pages.clear();
   child_hash_pages.assign(NUM_PARTITIONS, {});
 
+  auto write_guards = std::vector<WritePageGuard>{};
+
   for (uint16_t i = 0; i < NUM_PARTITIONS; i += 1) {
     auto pid = bpm->NewPage();
-    auto w_page_guard = bpm->WritePage(pid);
-    w_page_guard.AsMut<IntermediateResultPage>()->Init();
+    auto write_page_guard = bpm->WritePage(pid);
+
+    auto page = write_page_guard.AsMut<IntermediateResultPage>();
+    page->Init();
+
     child_hash_pages[i].emplace_back(pid);
+    write_guards.emplace_back(std::move(write_page_guard));
   }
 
   auto tuples = std::vector<Tuple>{};
@@ -92,7 +99,22 @@ void HashJoinExecutor::InitHashPages(const std::unique_ptr<AbstractExecutor> &ch
     for (const auto &tuple : tuples) {
       auto hashKey = MakeHashKey(tuple, child->GetOutputSchema(), child_key_exprs);
       auto partition_bucket_index = GetHashPartitionIndex(hashKey, current_hashing_salt);
-      // continue here, should have a buffer vector to hold the guard
+
+      auto &write_page_guard = write_guards[partition_bucket_index];
+      auto page = write_page_guard.AsMut<IntermediateResultPage>();
+
+      if (auto insert_status = page->InsertTuple(tuple); !insert_status) {
+        // page is full, need to create new page
+        auto pid = bpm->NewPage();
+        auto write_page_guard = bpm->WritePage(pid);
+
+        auto *page = write_page_guard.AsMut<IntermediateResultPage>();
+        page->Init();
+
+        BUSTUB_ASSERT(page->InsertTuple(tuple), "new page insert must success");
+
+        write_guards[partition_bucket_index] = std::move(write_page_guard);
+      }
     }
   }
 };
