@@ -11,7 +11,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "execution/executors/hash_join_executor.h"
-#include <cstdint>
 #include <functional>
 #include <utility>
 #include <vector>
@@ -20,7 +19,6 @@
 #include "common/macros.h"
 #include "common/util/hash_util.h"
 #include "execution/expressions/abstract_expression.h"
-#include "storage/page/intermediate_result_page.h"
 #include "storage/table/tuple.h"
 
 namespace bustub {
@@ -67,48 +65,33 @@ auto HashJoinExecutor::Next(std::vector<bustub::Tuple> *tuple_batch, std::vector
   UNIMPLEMENTED("TODO(P3): Add implementation.");
 }
 
-void HashJoinExecutor::RecursivePartitionTuples(uint16_t index) {}
+void HashJoinExecutor::RecursivePartitionTuples(uint16_t index) {
 
-void HashJoinExecutor::InitHashPages(const std::unique_ptr<AbstractExecutor> &child,
-                                     const std::vector<AbstractExpressionRef> &child_key_exprs,
-                                     std::vector<std::vector<page_id_t>> &child_hash_pages) {
-  auto *bpm = exec_ctx_->GetBufferPoolManager();
-  // reset and init the child_hash_pages
-  child_hash_pages.clear();
-  child_hash_pages.assign(NUM_PARTITIONS, {});
+}
 
-  for (uint16_t i = 0; i < NUM_PARTITIONS; i += 1) {
-    auto pid = bpm->NewPage();
-    auto w_page_guard = bpm->WritePage(pid);
-    w_page_guard.AsMut<IntermediateResultPage>()->Init();
-    child_hash_pages[i].emplace_back(pid);
-  }
+void HashJoinExecutor::InitHashPages(const std::unique_ptr<AbstractExecutor>& child,const std::vector<AbstractExpressionRef>& child_key_exprs, std::vector<std::vector<page_id_t>>& child_hash_pages) {
+    auto tuples = std::vector<Tuple>{};
+    auto rids = std::vector<RID>{};
 
-  auto tuples = std::vector<Tuple>{};
-  auto rids = std::vector<RID>{};
-
-  uint16_t current_hashing_salt = 0;
-  while (!child->Next(&tuples, &rids, BUSTUB_BATCH_SIZE)) {
-    for (const auto &tuple : tuples) {
-      auto hashKey = MakeHashKey(tuple, child->GetOutputSchema(), child_key_exprs);
-      auto partition_bucket_index = GetHashPartitionIndex(hashKey, current_hashing_salt);
-      // continue here, should have a buffer vector to hold the guard
+    auto current_hashing_salt = 0;
+    while (!child->Next(&tuples, &rids, BUSTUB_BATCH_SIZE)) {
+        for (const auto& tuple: tuples) {
+            auto hashKey = MakeHashKey(tuple, child->GetOutputSchema(), child_key_exprs);
+        }
     }
-  }
 };
 
-auto HashJoinExecutor::MakeHashKey(const Tuple &tuple, const Schema &tuple_schema,
-                                   const std::vector<AbstractExpressionRef> &key_exprs) const -> HashKey {
-  auto keys = std::vector<Value>{};
+auto HashJoinExecutor::MakeHashKey(const Tuple& tuple, const Schema& tuple_schema, const std::vector<AbstractExpressionRef>& key_exprs) const -> HashKey {
+    auto keys= std::vector<Value>{};
 
-  for (const auto &expr : key_exprs) {
-    keys.emplace_back(expr->Evaluate(&tuple, tuple_schema));
-  }
+    for (const auto& expr: key_exprs) {
+       keys.emplace_back(expr->Evaluate(&tuple, tuple_schema));
+    }
 
-  return HashKey{.key_values_ = std::move(keys)};
+    return HashKey{.key_values_=std::move(keys)};
 };
 
-auto HashJoinExecutor::GetHashPartitionIndex(const HashKey &key, const uint32_t salt) const -> size_t {
-  return bustub::HashUtil::CombineHashes(std::hash<HashKey>{}(key), salt) % NUM_PARTITIONS;
+auto HashJoinExecutor::GetHashPartitionIndex(const HashKey& key, const uint32_t salt) const -> size_t {
+    return bustub::HashUtil::CombineHashes(std::hash<HashKey>{}(key), salt) % NUM_PARTITIONS;
 };
 }  // namespace bustub
