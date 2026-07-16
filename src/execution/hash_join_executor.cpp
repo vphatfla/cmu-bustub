@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "execution/executors/hash_join_executor.h"
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <utility>
@@ -54,6 +55,30 @@ void HashJoinExecutor::Init() {
 
   left_hash_pages_.clear();
   right_hash_pages_.clear();
+
+  right_partition_tuple_count_.clear();
+  left_partition_tuple_count_.clear();
+  right_partition_tuple_count_.assign(NUM_PARTITIONS, 0);
+  left_partition_tuple_count_.assign(NUM_PARTITIONS, 0);
+
+  InitHashPages(left_child_, plan_->LeftJoinKeyExpressions(), left_hash_pages_, left_partition_tuple_count_);
+  InitHashPages(right_child_, plan_->RightJoinKeyExpressions(), right_hash_pages_, right_partition_tuple_count_);
+
+  while (true) {
+    const auto indexes_repartition = GetIndexesToRepartition(right_partition_tuple_count_);
+    if (indexes_repartition.empty()) {
+      break;
+    }
+
+    for (const auto &i : indexes_repartition) {
+      RehashPartiton(right_hash_pages_, i, 1, right_child_->GetOutputSchema(), plan_->LeftJoinKeyExpressions(),
+                     left_partition_tuple_count_);
+      RehashPartiton(left_hash_pages_, i, 1, left_child_->GetOutputSchema(), plan_->RightJoinKeyExpressions(),
+                     left_partition_tuple_count_);
+
+      // todo: determine how to increase the salt and when
+    }
+  }
 }
 
 /**
@@ -72,13 +97,13 @@ void HashJoinExecutor::RecursivePartitionTuples(uint16_t index) {}
 
 void HashJoinExecutor::InitHashPages(const std::unique_ptr<AbstractExecutor> &child,
                                      const std::vector<AbstractExpressionRef> &child_key_exprs,
-                                     std::vector<std::vector<page_id_t>> &child_hash_pages) {
+                                     std::vector<std::vector<page_id_t>> &child_hash_pages,
+                                     std::vector<int> &partition_tuple_count) {
   auto *bpm = exec_ctx_->GetBufferPoolManager();
   // reset and init the child_hash_pages
+  child->Init();
   child_hash_pages.clear();
   child_hash_pages.assign(NUM_PARTITIONS, {});
-
-  auto write_guards = std::vector<WritePageGuard>{};
 
   for (uint16_t i = 0; i < NUM_PARTITIONS; i += 1) {
     auto pid = bpm->NewPage();
@@ -88,33 +113,17 @@ void HashJoinExecutor::InitHashPages(const std::unique_ptr<AbstractExecutor> &ch
     page->Init();
 
     child_hash_pages[i].emplace_back(pid);
-    write_guards.emplace_back(std::move(write_page_guard));
   }
 
   auto tuples = std::vector<Tuple>{};
   auto rids = std::vector<RID>{};
 
-  uint16_t current_hashing_salt = 0;
-  while (!child->Next(&tuples, &rids, BUSTUB_BATCH_SIZE)) {
+  while (child->Next(&tuples, &rids, BUSTUB_BATCH_SIZE)) {
     for (const auto &tuple : tuples) {
       auto hashKey = MakeHashKey(tuple, child->GetOutputSchema(), child_key_exprs);
-      auto partition_bucket_index = GetHashPartitionIndex(hashKey, current_hashing_salt);
+      auto partition_bucket_index = GetHashPartitionIndex(hashKey, 0);
 
-      auto &write_page_guard = write_guards[partition_bucket_index];
-      auto page = write_page_guard.AsMut<IntermediateResultPage>();
-
-      if (auto insert_status = page->InsertTuple(tuple); !insert_status) {
-        // page is full, need to create new page
-        auto pid = bpm->NewPage();
-        auto write_page_guard = bpm->WritePage(pid);
-
-        auto *page = write_page_guard.AsMut<IntermediateResultPage>();
-        page->Init();
-
-        BUSTUB_ASSERT(page->InsertTuple(tuple), "new page insert must success");
-
-        write_guards[partition_bucket_index] = std::move(write_page_guard);
-      }
+      InsertTupleIntoPartition(tuple, child_hash_pages, partition_bucket_index, partition_tuple_count);
     }
   }
 };
@@ -132,5 +141,76 @@ auto HashJoinExecutor::MakeHashKey(const Tuple &tuple, const Schema &tuple_schem
 
 auto HashJoinExecutor::GetHashPartitionIndex(const HashKey &key, const uint32_t salt) const -> size_t {
   return bustub::HashUtil::CombineHashes(std::hash<HashKey>{}(key), salt) % NUM_PARTITIONS;
+};
+
+void HashJoinExecutor::RehashPartiton(std::vector<std::vector<page_id_t>> &partitions, const size_t index,
+                                      const uint32_t salt, const Schema &tuple_schema,
+                                      const std::vector<AbstractExpressionRef> &key_exprs,
+                                      std::vector<int> &partition_tuple_count) {
+  auto *bpm = exec_ctx_->GetBufferPoolManager();
+
+  auto pids = std::move(partitions[index]);
+  // remove all the pids from the partitions
+  partitions[index] = std::vector<page_id_t>{};
+  partition_tuple_count[index] = 0;
+
+  for (const auto &pid : pids) {
+    auto write_page_guard = bpm->WritePage(pid);
+    const auto *p = write_page_guard.AsMut<const IntermediateResultPage>();
+
+    auto num_tuples = p->GetNumTuples();
+    for (uint16_t i = 0; i < num_tuples; i += 1) {
+      auto t = p->GetTuple(i);
+      auto hash_key = MakeHashKey(t, tuple_schema, key_exprs);
+      auto partition_index = GetHashPartitionIndex(hash_key, salt);
+      InsertTupleIntoPartition(t, partitions, partition_index, partition_tuple_count);
+    }
+  }
+}
+
+void HashJoinExecutor::InsertTupleIntoPartition(const Tuple &tuple, std::vector<std::vector<page_id_t>> &partitions,
+                                                const size_t partition_index, std::vector<int> &partition_tuple_count) {
+  auto *bpm = exec_ctx_->GetBufferPoolManager();
+
+  auto &pids = partitions[partition_index];
+  page_id_t last_pid;
+  if (pids.empty()) {
+    last_pid = bpm->NewPage();
+  } else {
+    last_pid = pids[pids.size() - 1];
+  }
+  auto write_page_guard = bpm->WritePage(last_pid);
+  auto *p = write_page_guard.AsMut<IntermediateResultPage>();
+  if (pids.empty()) {
+    p->Init();
+    pids.emplace_back(last_pid);
+  }
+
+  if (auto insert_status = p->InsertTuple(tuple); !insert_status) {
+    // page is full, need to create new page
+    auto pid = bpm->NewPage();
+    auto write_page_guard = bpm->WritePage(pid);
+
+    auto *p = write_page_guard.AsMut<IntermediateResultPage>();
+    p->Init();
+
+    BUSTUB_ASSERT(p->InsertTuple(tuple), "new page insert must success");
+
+    pids.emplace_back(pid);
+  }
+
+  partition_tuple_count[partition_index] += 1;
+};
+
+auto HashJoinExecutor::GetIndexesToRepartition(const std::vector<int> &partition_tuple_count) -> std::vector<int> {
+  auto result = std::vector<int>{};
+
+  for (size_t i = 0; i < NUM_PARTITIONS; i += 1) {
+    if (partition_tuple_count[i] > COUNT_LIMIT_FOR_TUPLES_PARTITION) {
+      result.emplace_back(i);
+    }
+  }
+
+  return result;
 };
 }  // namespace bustub

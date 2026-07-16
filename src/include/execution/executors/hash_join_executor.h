@@ -97,7 +97,7 @@ class HashJoinExecutor : public AbstractExecutor {
   auto GetOutputSchema() const -> const Schema & override { return plan_->OutputSchema(); };
 
   /* memory limit for the unordered_map tuples from the right table partitions in mem at once, 4KB */
-  static constexpr uint16_t MEM_LIMIT_FOR_TUPLES_PARTITION = 4096;
+  static constexpr uint16_t COUNT_LIMIT_FOR_TUPLES_PARTITION = 4096;
 
   // constant number of partitions that we allow for both table tuples
   static constexpr uint16_t NUM_PARTITIONS = 8;
@@ -116,6 +116,9 @@ class HashJoinExecutor : public AbstractExecutor {
   std::vector<std::vector<page_id_t>> left_hash_pages_;
   std::vector<std::vector<page_id_t>> right_hash_pages_;
 
+  // memory tracker for the right partitions, incase we need to rehash
+  std::vector<int> right_partition_tuple_count_;
+  std::vector<int> left_partition_tuple_count_;
   // runtime hashmap for the right child tuples (since we only handle left join and inner join)
   // this is per partition not the whole right table
   std::unordered_map<HashKey, std::vector<Tuple>> right_tuples_;
@@ -133,7 +136,7 @@ class HashJoinExecutor : public AbstractExecutor {
   // @brief helper func to build the hash pages vector
   void InitHashPages(const std::unique_ptr<AbstractExecutor> &child,
                      const std::vector<AbstractExpressionRef> &child_key_exprs,
-                     std::vector<std::vector<page_id_t>> &child_hash_pages);
+                     std::vector<std::vector<page_id_t>> &child_hash_pages, std::vector<int> &partition_tuple_count);
 
   // @brief helper to make the hash key from the tuples
   auto MakeHashKey(const Tuple &tuple, const Schema &tuple_schema,
@@ -141,6 +144,18 @@ class HashJoinExecutor : public AbstractExecutor {
 
   // @brief helper to get the partition index given the hashkey and salt level
   auto GetHashPartitionIndex(const HashKey &key, const uint32_t salt) const -> size_t;
+
+  // @brief helper to rehash tuple in partition
+  void RehashPartiton(std::vector<std::vector<page_id_t>> &partitions, const size_t index, const uint32_t salt,
+                      const Schema &tuple_schema, const std::vector<AbstractExpressionRef> &key_exprs,
+                      std::vector<int> &partition_tuple_count);
+
+  // @brief helper to insert a tuple into a page within a partition
+  void InsertTupleIntoPartition(const Tuple &tuple, std::vector<std::vector<page_id_t>> &partitions,
+                                const size_t partition_index, std::vector<int> &partition_tuple_count);
+
+  // @brief helper to check if the partitions need rehasing/repartition
+  auto GetIndexesToRepartition(const std::vector<int> &partition_tuple_count) -> std::vector<int>;
 };
 
 }  // namespace bustub
