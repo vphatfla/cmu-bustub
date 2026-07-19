@@ -36,7 +36,7 @@ struct HashKey {
   // keys that are used to hash in HashJoinExecutor from the tuple
   std::vector<Value> key_values_;
 
-  auto operator==(const HashKey &other) -> bool {
+  auto operator==(const HashKey &other) const -> bool {
     if (key_values_.size() != other.key_values_.size()) {
       return false;
     }
@@ -65,7 +65,7 @@ namespace std {
 
 template <>
 struct hash<bustub::HashKey> {
-  auto operator()(const bustub::HashKey &key) -> std::size_t {
+  auto operator()(const bustub::HashKey &key) const -> std::size_t {
     size_t hash_result = 0;
     for (const auto &k : key.key_values_) {
       if (!k.IsNull()) {
@@ -113,25 +113,28 @@ class HashJoinExecutor : public AbstractExecutor {
   // left_pages[i] can contain 1 or more page, the first layer (row) of this 2-d vector is the parititon
   // the 2nd layer (col) of this 2-d vector is the list of pages that share the same hashed key (in the same partition),
   // from both pages
-  std::vector<std::vector<page_id_t>> left_hash_pages_;
-  std::vector<std::vector<page_id_t>> right_hash_pages_;
+  std::vector<std::vector<page_id_t>> left_partitions_;
+  std::vector<std::vector<page_id_t>> right_partitions_;
 
   // memory tracker for the right partitions, incase we need to rehash
   std::vector<int> right_partition_tuple_count_;
   std::vector<int> left_partition_tuple_count_;
   // runtime hashmap for the right child tuples (since we only handle left join and inner join)
   // this is per partition not the whole right table
-  std::unordered_map<HashKey, std::vector<Tuple>> right_tuples_;
+  std::unordered_map<HashKey, std::vector<Tuple>> cached_right_tuples_;
 
-  /* tracker for stream left parition left_hash_pages_[x] next() */
-  // @brief the index of the partition in left_hash_pages_ that we are tracking
-  uint16_t curr_left_partition_index_;
-  // @brief the current tuple index to be streamed next within left_hash_pages_[curr_left_partition_index_]
-  uint16_t curr_left_tuple_index_;
+  /* tracker for stream left parition left_partitions_[x] next() */
+  // @brief the index of the partition in left_partitions_ that we are tracking
+  int left_partition_bucket_index_;
+  // @brief the current page index within the streaming bucket
+  int left_partition_page_index_;
+  // @brief the current tuple index to be streamed next within left_partitions_[curr_left_partition_index_]
+  int left_partition_tuple_index_;
+  // @brief the current partition page tuple size
+  int left_partition_page_size_;
 
-  // @brief helper func to repartition the tuples in the particular index from both left_hash_pages_ and
-  // right_hash_pages_
-  void RecursivePartitionTuples(uint16_t index);
+  // @brief tracker for the vector of tuple on the right in case of streaming
+  int right_tuple_matched_index_;
 
   // @brief helper func to build the hash pages vector
   void InitHashPages(const std::unique_ptr<AbstractExecutor> &child,
@@ -156,6 +159,10 @@ class HashJoinExecutor : public AbstractExecutor {
 
   // @brief helper to check if the partitions need rehasing/repartition
   auto GetIndexesToRepartition(const std::vector<int> &partition_tuple_count) -> std::vector<int>;
+
+  // @brief helper to build the output tuple for this executor, right_tuple could be a nullprt since we also support
+  // LEFT_JOIN
+  auto MakeOutputTuple(const Tuple &left_tuple, const Tuple *right_tuple) const -> Tuple;
 };
 
 }  // namespace bustub

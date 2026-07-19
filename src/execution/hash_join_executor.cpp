@@ -16,14 +16,18 @@
 #include <functional>
 #include <utility>
 #include <vector>
+#include "binder/table_ref/bound_join_ref.h"
 #include "catalog/schema.h"
 #include "common/config.h"
 #include "common/macros.h"
+#include "common/rid.h"
 #include "common/util/hash_util.h"
 #include "execution/expressions/abstract_expression.h"
 #include "storage/page/intermediate_result_page.h"
 #include "storage/page/page_guard.h"
 #include "storage/table/tuple.h"
+#include "type/value.h"
+#include "type/value_factory.h"
 
 namespace bustub {
 
@@ -53,31 +57,49 @@ void HashJoinExecutor::Init() {
   left_child_->Init();
   right_child_->Init();
 
-  left_hash_pages_.clear();
-  right_hash_pages_.clear();
+  left_partitions_.clear();
+  right_partitions_.clear();
 
   right_partition_tuple_count_.clear();
   left_partition_tuple_count_.clear();
   right_partition_tuple_count_.assign(NUM_PARTITIONS, 0);
   left_partition_tuple_count_.assign(NUM_PARTITIONS, 0);
 
-  InitHashPages(left_child_, plan_->LeftJoinKeyExpressions(), left_hash_pages_, left_partition_tuple_count_);
-  InitHashPages(right_child_, plan_->RightJoinKeyExpressions(), right_hash_pages_, right_partition_tuple_count_);
+  left_partition_bucket_index_ = -1;
+  left_partition_page_index_ = -1;
+  left_partition_tuple_index_ = -1;
+  left_partition_page_size_ = -1;
 
+  cached_right_tuples_.clear();
+
+  InitHashPages(left_child_, plan_->LeftJoinKeyExpressions(), left_partitions_, left_partition_tuple_count_);
+  InitHashPages(right_child_, plan_->RightJoinKeyExpressions(), right_partitions_, right_partition_tuple_count_);
+
+  uint32_t repartition_salt = 1;
   while (true) {
     const auto indexes_repartition = GetIndexesToRepartition(right_partition_tuple_count_);
     if (indexes_repartition.empty()) {
       break;
     }
 
+    // buffer up the left and right partitions
+    for (uint16_t i = 0; i < NUM_PARTITIONS; i += 1) {
+      left_partitions_.emplace_back(std::vector<page_id_t>{});
+      right_partitions_.emplace_back(std::vector<page_id_t>{});
+
+      left_partition_tuple_count_.emplace_back(0);
+      right_partition_tuple_count_.emplace_back(0);
+    }
     for (const auto &i : indexes_repartition) {
-      RehashPartiton(right_hash_pages_, i, 1, right_child_->GetOutputSchema(), plan_->LeftJoinKeyExpressions(),
-                     left_partition_tuple_count_);
-      RehashPartiton(left_hash_pages_, i, 1, left_child_->GetOutputSchema(), plan_->RightJoinKeyExpressions(),
-                     left_partition_tuple_count_);
+      RehashPartiton(right_partitions_, i, repartition_salt, right_child_->GetOutputSchema(),
+                     plan_->RightJoinKeyExpressions(), right_partition_tuple_count_);
+      RehashPartiton(left_partitions_, i, repartition_salt, left_child_->GetOutputSchema(),
+                     plan_->LeftJoinKeyExpressions(), left_partition_tuple_count_);
 
       // todo: determine how to increase the salt and when
     }
+
+    repartition_salt += 1;
   }
 }
 
@@ -90,10 +112,97 @@ void HashJoinExecutor::Init() {
  */
 auto HashJoinExecutor::Next(std::vector<bustub::Tuple> *tuple_batch, std::vector<bustub::RID> *rid_batch,
                             size_t batch_size) -> bool {
-  UNIMPLEMENTED("TODO(P3): Add implementation.");
-}
+  tuple_batch->clear();
+  rid_batch->clear();
+  tuple_batch->reserve(batch_size);
+  rid_batch->reserve(batch_size);
+  auto *bpm = exec_ctx_->GetBufferPoolManager();
 
-void HashJoinExecutor::RecursivePartitionTuples(uint16_t index) {}
+  // stream the left
+  while (batch_size > 0) {
+    // need to rebuild the hashmap for the next right partition bucket
+    if (left_partition_bucket_index_ == -1 || (left_partition_tuple_index_ >= left_partition_page_size_ &&
+                                               static_cast<size_t>(left_partition_page_index_ + 1) >=
+                                                   left_partitions_[left_partition_bucket_index_].size())) {
+      if (static_cast<size_t>(left_partition_bucket_index_ + 1) >= left_partitions_.size()) {
+        // DONE with all the left tuples, break here
+        break;
+      }
+
+      left_partition_bucket_index_ += 1;
+
+      // start with the new partition bucket
+      cached_right_tuples_.clear();
+      for (const auto &pid : right_partitions_[left_partition_bucket_index_]) {
+        {
+          auto read_guard = bpm->ReadPage(pid);
+          const auto *p = read_guard.As<const IntermediateResultPage>();
+          for (auto i = 0; i < p->GetNumTuples(); i += 1) {
+            auto hash_key =
+                MakeHashKey(p->GetTupleAtIndex(i), right_child_->GetOutputSchema(), plan_->RightJoinKeyExpressions());
+            if (auto it = cached_right_tuples_.find(hash_key); it == cached_right_tuples_.end()) {
+              cached_right_tuples_.insert({hash_key, std::vector<Tuple>{}});
+            }
+            cached_right_tuples_.find(hash_key)->second.emplace_back(p->GetTupleAtIndex(i));
+          }
+        }  // read guard should have been destroyed here
+        bpm->DeletePage(pid);
+      }
+      left_partition_page_index_ = 0;
+      left_partition_tuple_index_ = 0;
+      left_partition_page_size_ = -1;
+
+      right_tuple_matched_index_ = 0;
+    }
+
+    // check if we still have tuples in the current page to stream
+    if (left_partition_page_size_ != -1 && left_partition_tuple_index_ >= left_partition_page_size_) {
+      left_partition_page_size_ = -1;
+      left_partition_tuple_index_ = -1;
+      left_partition_page_index_ += 1;
+    }
+    auto read_guard = bpm->ReadPage(left_partitions_[left_partition_bucket_index_][left_partition_page_index_]);
+    auto *page = read_guard.As<const IntermediateResultPage>();
+    if (left_partition_page_size_ == -1) {
+      left_partition_page_size_ = page->GetNumTuples();
+      left_partition_tuple_index_ = 0;
+    }
+
+    if (left_partition_page_size_ == 0) {
+      // move up
+      left_partition_page_size_ = -1;
+      left_partition_tuple_index_ = -1;
+      left_partition_page_index_ += 1;
+      continue;
+    }
+    const auto left_tuple = page->GetTupleAtIndex(left_partition_tuple_index_);
+    const auto left_hash_key = MakeHashKey(left_tuple, left_child_->GetOutputSchema(), plan_->LeftJoinKeyExpressions());
+    if (auto it = cached_right_tuples_.find(left_hash_key); it != cached_right_tuples_.end()) {
+      const auto &right_tuples = it->second;
+      while (batch_size > 0 && static_cast<size_t>(right_tuple_matched_index_) < right_tuples.size()) {
+        tuple_batch->emplace_back(MakeOutputTuple(left_tuple, &right_tuples[right_tuple_matched_index_]));
+        rid_batch->emplace_back(RID{});
+        right_tuple_matched_index_ += 1;
+        batch_size -= 1;
+
+        if (static_cast<size_t>(right_tuple_matched_index_) >= right_tuples.size()) {
+          // finish process the left tuple, moving on
+          left_partition_tuple_index_ += 1;
+        }
+      }
+    } else if (plan_->GetJoinType() == JoinType::LEFT) {
+      tuple_batch->emplace_back(MakeOutputTuple(left_tuple, nullptr));
+      rid_batch->emplace_back(RID{});
+      batch_size -= 1;
+      // finish process the left tuple, moving on
+      left_partition_tuple_index_ += 1;
+    } else {
+      left_partition_tuple_index_ += 1;
+    }
+  }
+
+  return !tuple_batch->empty();
+}
 
 void HashJoinExecutor::InitHashPages(const std::unique_ptr<AbstractExecutor> &child,
                                      const std::vector<AbstractExpressionRef> &child_key_exprs,
@@ -160,11 +269,22 @@ void HashJoinExecutor::RehashPartiton(std::vector<std::vector<page_id_t>> &parti
 
     auto num_tuples = p->GetNumTuples();
     for (uint16_t i = 0; i < num_tuples; i += 1) {
-      auto t = p->GetTuple(i);
+      auto t = p->GetTupleAtIndex(i);
       auto hash_key = MakeHashKey(t, tuple_schema, key_exprs);
       auto partition_index = GetHashPartitionIndex(hash_key, salt);
+
+      // recalulate the index since this is repartition, append only
+      if (salt > 0) {
+        partition_index += NUM_PARTITIONS * salt;
+      }
+
       InsertTupleIntoPartition(t, partitions, partition_index, partition_tuple_count);
     }
+  }
+
+  // delete all the old pids
+  for (const auto &pid : pids) {
+    bpm->DeletePage(pid);
   }
 }
 
@@ -205,12 +325,33 @@ void HashJoinExecutor::InsertTupleIntoPartition(const Tuple &tuple, std::vector<
 auto HashJoinExecutor::GetIndexesToRepartition(const std::vector<int> &partition_tuple_count) -> std::vector<int> {
   auto result = std::vector<int>{};
 
-  for (size_t i = 0; i < NUM_PARTITIONS; i += 1) {
+  for (size_t i = 0; i < partition_tuple_count.size(); i += 1) {
     if (partition_tuple_count[i] > COUNT_LIMIT_FOR_TUPLES_PARTITION) {
       result.emplace_back(i);
     }
   }
 
   return result;
+};
+
+auto HashJoinExecutor::MakeOutputTuple(const Tuple &left_tuple, const Tuple *right_tuple) const -> Tuple {
+  const auto &left_tuple_schema = left_child_->GetOutputSchema();
+  const auto &right_tuple_schema = right_child_->GetOutputSchema();
+
+  auto values = std::vector<Value>{};
+  values.reserve(plan_->OutputSchema().GetColumnCount());
+
+  for (size_t i = 0; i < left_tuple_schema.GetColumnCount(); i += 1) {
+    values.emplace_back(left_tuple.GetValue(&left_tuple_schema, i));
+  }
+  for (size_t i = 0; i < right_tuple_schema.GetColumnCount(); i += 1) {
+    if (right_tuple != nullptr) {
+      values.emplace_back(right_tuple->GetValue(&right_tuple_schema, i));
+    } else {
+      values.emplace_back(ValueFactory::GetNullValueByType(right_tuple_schema.GetColumn(i).GetType()));
+    }
+  }
+
+  return Tuple{std::move(values), &plan_->OutputSchema()};
 };
 }  // namespace bustub

@@ -35,7 +35,7 @@ class IntermediateResultPage {
    * Get the tuple at position given index
    * if such tuple does not exist, throw exception
    */
-  auto inline GetTuple(const uint16_t index) const -> Tuple {
+  auto inline GetTupleAtIndex(const uint16_t index) const -> Tuple {
     if (index >= header_.num_tuples_) {
       throw bustub::Exception("Tuple index out of range");
     }
