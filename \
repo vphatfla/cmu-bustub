@@ -34,9 +34,12 @@
 
 namespace bustub {
 
-// @brief slit the equi condition expr into 2 col exprs
-auto SplitEquiJoinExprIntoHashKeys(AbstractExpressionRef expr, std::vector<AbstractExpressionRef> *left_keys,
-                                   std::vector<AbstractExpressionRef> *right_keys) -> bool {
+// @brief slit the equi condition expr into 2 col exprs, e.g colA = colB
+// for join, the returned left column should be from the left table, and same for the right column should belong to the
+// right table
+auto SplitEquiJoinExprIntoHashKeys(AbstractExpressionRef expr,std::vector<AbstractExpressionRef> *left_keys,
+                         std::vector<AbstractExpressionRef> *right_keys)
+    -> bool {
   const auto *cmp_expr = dynamic_cast<const ComparisonExpression *>(expr.get());
 
   if (cmp_expr == nullptr) {
@@ -47,22 +50,18 @@ auto SplitEquiJoinExprIntoHashKeys(AbstractExpressionRef expr, std::vector<Abstr
     const auto *colTwo = dynamic_cast<const ColumnValueExpression *>(cmp_expr->GetChildAt(1).get());
 
     if (colOne == nullptr || colTwo == nullptr) {
-      return false;
+        return false;
     }
 
     if (colOne->GetTupleIdx() == 0 && colTwo->GetTupleIdx() == 1) {
-      left_keys->emplace_back(expr->GetChildAt(0));
-      right_keys->emplace_back(expr->GetChildAt(1));
-      return true;
-    }
-    if (colOne->GetTupleIdx() == 1 && colTwo->GetTupleIdx() == 0) {
-      left_keys->emplace_back(expr->GetChildAt(1));
-      right_keys->emplace_back(expr->GetChildAt(0));
-      return true;
+        left_keys->emplace_back(expr->GetChildAt(0));
+
+    } else if (colOne->GetTupleIdx() == 1 && colTwo->GetTupleIdx() == 0) {
+      return std::pair<AbstractExpressionRef, AbstractExpressionRef>{cmp_expr->GetChildAt(1), cmp_expr->GetChildAt(0)};
     }
   }
 
-  return false;
+  return std::nullopt;
 }
 // @brief flatten the original predicate expression from the NLJ into left_keys and right_keys respectively
 auto ResolveNLJToHashKey(AbstractExpressionRef expr, std::vector<AbstractExpressionRef> *left_keys,
@@ -73,16 +72,21 @@ auto ResolveNLJToHashKey(AbstractExpressionRef expr, std::vector<AbstractExpress
   const auto *logic_expr = dynamic_cast<const LogicExpression *>(expr.get());
 
   if (logic_expr == nullptr) {
-    return SplitEquiJoinExprIntoHashKeys(expr, left_keys, right_keys);
+    auto p = SplitEquiJoinExpr(expr);
+    if (p.has_value()) {
+      left_keys->emplace_back(p->first);
+      right_keys->emplace_back(p->second);
+      return true;
+    }
+    return false;
   }
 
-  if (logic_expr->logic_type_ == LogicType::And) {
-    BUSTUB_ASSERT(logic_expr->children_.size() == 2, "Equi AND logical expr must have exact 2 children");
-    return ResolveNLJToHashKey(expr->GetChildAt(0), left_keys, right_keys) &&
-           ResolveNLJToHashKey(expr->GetChildAt(1), left_keys, right_keys);
+
+  if (logic_expr->logic_type_ != LogicType::And) {
+    return false;
   }
 
-  return false;
+  return true;
 }
 /**
  * @brief optimize nested loop join into hash join.
@@ -102,7 +106,7 @@ auto Optimizer::OptimizeNLJAsHashJoin(const AbstractPlanNodeRef &plan) -> Abstra
 
     BUSTUB_ASSERT(!optimized_plan->children_.empty(), "nested loop join plan must have children");
 
-    auto expr = nlj_plan.Predicate();
+    auto expr = nlj_plan.predicate_;
     if (expr.get() != nullptr) {
       auto left_keys = std::vector<AbstractExpressionRef>{};
       auto right_keys = std::vector<AbstractExpressionRef>{};
