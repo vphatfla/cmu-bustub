@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
@@ -136,9 +137,23 @@ class HashJoinExecutor : public AbstractExecutor {
   // @brief tracker for the vector of tuple on the right in case of streaming
   int right_tuple_matched_index_;
 
+  // @brief advance to the next partition bucket if the current one is fully drained.
+  // @return false once every bucket has been drained (caller should stop streaming); true otherwise
+  auto AdvanceToNextBucketIfNeeded() -> bool;
+
+  // @brief rebuild cached_right_tuples_ from every page in right_partitions_[left_partition_bucket_index_]
+  void BuildRightTuplesForCurrentBucket();
+
+  // @brief advance past an exhausted or empty left page as needed and return the current left tuple.
+  // @return nullopt if the current page turned out to be empty (caller should retry); the tuple otherwise
+  auto TryFetchCurrentLeftTuple() -> std::optional<Tuple>;
+
+  // @brief probe cached_right_tuples_ for left_tuple and emit matches (NULL-pad for LEFT, skip for INNER-no-match)
+  void EmitMatchesForLeftTuple(const Tuple &left_tuple, std::vector<Tuple> *tuple_batch, std::vector<RID> *rid_batch,
+                               size_t *batch_size);
+
   // @brief helper func to build the hash pages vector
-  void InitHashPages(const std::unique_ptr<AbstractExecutor> &child,
-                     const std::vector<AbstractExpressionRef> &child_key_exprs,
+  void InitHashPages(AbstractExecutor &child, const std::vector<AbstractExpressionRef> &child_key_exprs,
                      std::vector<std::vector<page_id_t>> &child_hash_pages, std::vector<int> &partition_tuple_count);
 
   // @brief helper to make the hash key from the tuples
