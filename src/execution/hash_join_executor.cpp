@@ -188,6 +188,8 @@ auto HashJoinExecutor::Next(std::vector<bustub::Tuple> *tuple_batch, std::vector
         if (static_cast<size_t>(right_tuple_matched_index_) >= right_tuples.size()) {
           // finish process the left tuple, moving on
           left_partition_tuple_index_ += 1;
+          right_tuple_matched_index_ = 0;
+          break;
         }
       }
     } else if (plan_->GetJoinType() == JoinType::LEFT) {
@@ -196,8 +198,10 @@ auto HashJoinExecutor::Next(std::vector<bustub::Tuple> *tuple_batch, std::vector
       batch_size -= 1;
       // finish process the left tuple, moving on
       left_partition_tuple_index_ += 1;
+      right_tuple_matched_index_ = 0;
     } else {
       left_partition_tuple_index_ += 1;
+      right_tuple_matched_index_ = 0;
     }
   }
 
