@@ -12,12 +12,16 @@
 
 #pragma once
 
+#include <cstddef>
 #include <memory>
+#include <tuple>
 #include <utility>
 #include <vector>
 
+#include "common/rid.h"
 #include "execution/executors/abstract_executor.h"
 #include "execution/plans/limit_plan.h"
+#include "storage/table/tuple.h"
 
 namespace bustub {
 
@@ -43,5 +47,15 @@ class LimitExecutor : public AbstractExecutor {
 
   /** The child executor from which tuples are obtained */
   std::unique_ptr<AbstractExecutor> child_executor_;
+
+  // @brief buffer cache for the tuples streaming from child_executor_
+  std::vector<Tuple> child_tuples_;
+  // @brief buffer cache for the rids streaming from child_executor_
+  std::vector<RID> child_rids_;
+  // @brief index tracker for the in mem cache tuples from the child executor
+  size_t child_tuple_index_{0};
+
+  // @brief mutable tracker for limit tuples
+  size_t limit_{0};
 };
 }  // namespace bustub

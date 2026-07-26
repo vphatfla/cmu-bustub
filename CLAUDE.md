@@ -17,12 +17,13 @@
 | Task #1 | Access Method Executors (SeqScan, Insert, Update, Delete, IndexScan, optimizer) | ✅ DONE |
 | Task #2 | Aggregation & Join Executors (Aggregation ✅, NLJ ✅, NestedIndexJoin ✅) | ✅ DONE |
 | Task #3 | Hash Join & Optimization (IntermediateResultPage ✅, HashJoin ✅, NLJ→HashJoin optimizer ✅) | ✅ DONE — p3.14 & p3.15 both pass |
-| Task #4 | Sort, Limit, TopN & Window Functions (ExternalMergeSort, Limit, TopN, Sort+Limit→TopN, WindowFunction) | ⬜ TODO |
+| Task #4 | Sort, Limit, TopN & Window Functions (ExternalMergeSort, Limit ✅, TopN, Sort+Limit→TopN, WindowFunction) | 🔶 IN PROGRESS — Limit done, rest stubbed, see "Task #4 — Code Recon" |
 
-### Verified State (2026-07-08 — read from source, not cache)
+### Verified State (2026-07-21 — read from source, not cache)
 - **Tasks #1 & #2**: fully implemented & verified (9 executors + SeqScan→IndexScan optimizer). Only cosmetic comment typos (`outter`, `experission`, `comparsion`, `bnreak`).
 - **Task #3**: ✅ DONE as of 2026-07-20 — `intermediate_result_page.h`, `hash_join_executor.{h,cpp}` (Init/Next fully implemented), and `nlj_as_hash_join.cpp` (optimizer rule implemented, recursive AND-flattening) are all complete. `p3.14-hash-join.slt` and `p3.15-multi-way-hash-join.slt` both pass end-to-end with zero failures. See the full "HashJoin" section below for implementation details and the bug history.
-- **Task #4**: ALL stubs — `execution_common.cpp` (`TupleComparator::operator()`→false, `GenerateSortKey()`→{}), `external_merge_sort_executor.{h,cpp}` (Iterator + ctor/Init/Next `UNIMPLEMENTED`, only `template class ...<2>` instantiated), `limit_executor.cpp`, `topn_executor.cpp` (+`GetNumInHeap`), `topn_per_group_executor.cpp`, `window_function_executor.cpp` (ctor done, Init throws, Next→false), `sort_limit_as_topn.cpp` (returns plan unchanged).
+- **Task #4**: re-verified 2026-07-25 (fresh agent read of every file, not cache). **`limit_executor.{h,cpp}` is now fully implemented** (uncommitted, not yet committed) — ctor stores `plan_`/`child_executor_`; `Init()` re-inits child, clears `child_tuples_`/`child_rids_` buffers, resets `limit_ = plan_->GetLimit()`; `Next()` refills the buffer from the child in `BUSTUB_BATCH_SIZE` chunks and copies into the output batch while `batch_size>0 && limit_>0`, decrementing both. Logic verified correct by inspection. Everything else still stubbed: `execution_common.cpp` (`TupleComparator::operator()`→false, `GenerateSortKey()`→{}), `external_merge_sort_executor.{h,cpp}` (Iterator + ctor/Init/Next `UNIMPLEMENTED`, only `template class ...<2>` instantiated), `topn_executor.cpp` (empty ctor — doesn't even store `plan_`/`child_executor_` despite both being declared as members, `NotImplementedException`, +`GetNumInHeap` throws), `topn_per_group_executor.cpp` (ctor stores plan+child, `NotImplementedException`), `window_function_executor.cpp` (ctor done, Init throws, Next→false), `sort_limit_as_topn.cpp` (returns plan unchanged, no recursion into children). Full per-file breakdown with exact stub code and design notes in "Task #4 — Code Recon" section below.
+- **Stray debug files at repo root**: `expected.log`/`result.log` (untracked) are sqllogictest's auto-dump-on-mismatch output (`tools/sqllogictest/sqllogictest.cpp:ResultCompare`) from an ad-hoc manual run — `expected.log` has 8 rows (`"0 10"`..`"7 17"`), `result.log` has all 10 rows of `test_simple_seq_2`. No `LIMIT 8` query exists in any tracked `.slt`, so this was likely a manual/interactive query, not a real test failure — and it predates confirming Limit's logic is correct. Safe to delete once confirmed stale; not investigated further since Limit itself checks out.
 
 ### Untracked components discovered (not in original task list)
 - **TopN**: `src/execution/topn_executor.cpp` (has `GetNumInHeap()`) + `src/optimizer/sort_limit_as_topn.cpp` (Sort+Limit→TopN rule). Tested by `p3.17-topn.slt`.
@@ -281,7 +282,7 @@ make submit-p3
   - Header = `struct Header { page_id_t next_page_id_; uint16_t num_tuples_; }` → **8 bytes** (next_page_id 4 + num_tuples 2 + 2 pad). `next_page_id_` is currently UNUSED (chain tracked externally by `MergeSortRun.pages_`), harmless.
   - Slot = `using TupleInfo = std::pair<uint16_t, uint16_t>` = `{offset, size}` = **4 bytes**. Slot directory (FAM `TupleInfo tuple_info_[0]`) grows forward from byte 8; tuple payloads grow backward from `BUSTUB_PAGE_SIZE` (=**8192**, NOT 4096).
   - `sizeof(IntermediateResultPage) == 8` (static_assert). FAM `tuple_info_[0]` + `char page_begin_offset_[0]` are zero-length arrays (0 bytes; the class is a `reinterpret_cast` VIEW over a BPM frame, owns no bytes).
-- **Methods (all inline)**: `Init()` (num_tuples_=0), `GetNumTuples() const`, `GetTuple(idx) const` (bounds-check → `Tuple(RID{}, base+off, size)`), `GetNextTupleOffset(tuple) const` (fullness check → optional offset), `InsertTuple(tuple)` (append; returns bool).
+- **Methods (all inline)**: `Init()` (num_tuples_=0), `GetNumTuples() const`, `GetTupleAtIndex(idx) const` (bounds-check → `Tuple(RID{}, base+off, size)`; **note: named `GetTupleAtIndex`, not `GetTuple` — corrected 2026-07-25**), `GetNextTupleOffset(tuple) const` (fullness check → optional offset), `InsertTuple(tuple)` (append; returns bool).
 - **Write** = `memcpy(base + off, tuple.GetData(), tuple.GetLength())` (raw payload, NOT `SerializeTo` which adds a 4-byte length prefix → would double-store size). **Read** = public `Tuple(RID{}, base+off, size)` ctor (does resize+memcpy internally; NO friendship with Tuple needed). `base = reinterpret_cast<char*>(this)`.
 - **Fixes applied during review**: (1) `GetTuple`/`GetNumTuples` MUST be `const` — read path uses `ReadPageGuard::As<T>()` → `const T*`, won't compile otherwise. (2) removed `index < 0` on unsigned (tautology, fails clang-tidy). (3) unsigned-underflow guard in `GetNextTupleOffset`: `if (tuple.GetLength() > new_tuple_end_offset) return nullopt;` BEFORE subtracting (else huge wrap bypasses the `<` check → garbage offset). (4) added `#include <cstring>`.
 - **Key infra facts**: BPM uses `ArcReplacer` (not LRU-K). `FrameHeader::data_` (`vector<char>`) holds the raw bytes on the HEAP; `AsMut<T>()` = `reinterpret_cast<T*>(GetDataMut())` and SETS `is_dirty_=true`; `As<T>()` = const, no dirty. Page classes own NO bytes — `this` IS the frame pointer.
@@ -399,6 +400,54 @@ return !tuple_batch->empty();
 - Pipeline breakers (Aggregation) build in `Init()`, emit in `Next()`. Joins can stream.
 
 **Suggested order**: Aggregation → NestedLoopJoin → NestedIndexJoin. Tests: `p3.07-*`..`p3.13-*`.
+
+---
+
+## Task #4 — Code Recon (verified from source 2026-07-21, ready to implement)
+
+### `execution_common.{h,cpp}` — TupleComparator + GenerateSortKey
+- Types (`execution_common.h`): `using SortKey = std::vector<Value>;` `using SortEntry = std::pair<SortKey, Tuple>;` `OrderBy = std::tuple<OrderByType, OrderByNullType, AbstractExpressionRef>` (from `binder/bound_order_by.h` — **not** `binder/table_ref/bound_order_by.h`, corrected 2026-07-25). `OrderByType{INVALID=0, DEFAULT=1, ASC=2, DESC=3}`, `OrderByNullType{DEFAULT=0, NULLS_FIRST=1, NULLS_LAST=2}`. `TupleComparator` ctor `explicit TupleComparator(std::vector<OrderBy> order_bys)` is already implemented (moves into `order_bys_` member); only `operator()` and free-function `GenerateSortKey()` are stubs.
+- Current stubs (`execution_common.cpp`), both literally one-liners:
+  ```cpp
+  // TODO(P3): Implement the comparison method
+  auto TupleComparator::operator()(const SortEntry &entry_a, const SortEntry &entry_b) const -> bool { return false; }
+  // TODO(P3): Implement this method.
+  auto GenerateSortKey(const Tuple &tuple, const std::vector<OrderBy> &order_bys, const Schema &schema) -> SortKey { return {}; }
+  ```
+- File has a comment: "Above are all you need for P3. You can ignore the remaining part of this file until P4" — everything below that line in the file is P4/MVCC, not relevant here.
+- `GenerateSortKey` should `Evaluate()` each `order_bys[i]`'s expression (the `AbstractExpressionRef` in the tuple, index 2) against `(tuple, schema)` and collect into a `vector<Value>`.
+- `TupleComparator::operator()` should walk `order_bys_` in order; for each, compare `entry_a.first[i]` vs `entry_b.first[i]` via `Value::CompareLessThan`/`CompareGreaterThan` (returns `CmpBool`), flip direction for DESC, treat DEFAULT as ASC; on tie move to next key. NULL placement (`OrderByNullType`) needs explicit handling — decide NULLS_FIRST/LAST ordering relative to non-null values (SQL default is usually NULLS LAST for ASC / NULLS FIRST for DESC, but check test `.slt` expectations before assuming).
+
+### `external_merge_sort_executor.{h,cpp}` + `sort_plan.h`
+- `SortPlanNode` (`plans/sort_plan.h`): `GetChildPlan()`, `GetOrderBy() -> const std::vector<OrderBy>&`. Only one child.
+- Header (`external_merge_sort_executor.h`): templated `ExternalMergeSortExecutor<K>` — **only `K=2` is instantiated** (`template class ExternalMergeSortExecutor<2>;` at bottom of .cpp) → this is a strict 2-way merge sort, no need to genericize beyond that.
+  - `MergeSortRun` struct: `std::vector<page_id_t> pages_` + `BufferPoolManager *bpm_`. Nested `MergeSortRun::Iterator` — ALL of `operator++`, `operator*`, `operator==`, `operator!=` are `UNIMPLEMENTED("TODO(P3): Add implementation.")`; private member `const MergeSortRun *run_` only — comment says "you may want something to record your current position" (need to add e.g. page index + in-page tuple index as new members).
+  - `MergeSortRun::Begin()`/`End()` also `UNIMPLEMENTED`.
+  - Executor itself has `plan_`, `cmp_` (constructed as `cmp_(plan->GetOrderBy())` in the ctor init list already) — comment says "add your own private members" (need: child executor storage, vector of `MergeSortRun`s, output iterator/position).
+- `.cpp` stubs: constructor body, `Init()`, `Next()` are ALL `UNIMPLEMENTED("TODO(P3): Add implementation.")` — nothing is wired yet, including the ctor not storing `plan_` or `child_executor_`.
+- Page-spill pattern to reuse (same as HashJoin, see that section): `bpm->NewPage()` → `bpm->WritePage(pid).AsMut<IntermediateResultPage>()` → `page->Init()` → `page->InsertTuple(t)` (false = page full, allocate next page); read back via `bpm->ReadPage(pid).As<IntermediateResultPage>()`; `bpm->DeletePage(pid)` once a run/page is consumed.
+- Design sketch (2-way external merge sort): Init() drains child in batches, sorts chunks that fit in memory (`std::sort` with `cmp_` over `SortEntry`s, using `GenerateSortKey`), spills each sorted chunk to one or more `IntermediateResultPage`s as a `MergeSortRun`. Then repeatedly merge pairs of runs (2-way) via `MergeSortRun::Iterator`s until one run remains. `Next()` streams the final run's iterator into the output batch, extracting `Tuple` from `SortEntry`/page storage (note: `IntermediateResultPage` stores tuples only, not sort keys — recompute sort key when merging, or store `SortEntry` some other way — decide before implementing).
+
+### `limit_executor.{h,cpp}` + `limit_plan.h` — trivial, do this first in Task #4
+- `LimitPlanNode`: `GetLimit() -> size_t`, `GetChildPlan()`.
+- `.cpp`: constructor, `Init()`, `Next()` all `UNIMPLEMENTED("TODO(P3): Add implementation.")`. Simplest executor in Task #4 — just needs a running count member, cap output at `plan_->GetLimit()`, otherwise pass child batches straight through (truncate the last batch as needed).
+
+### `topn_executor.{h,cpp}` + `topn_plan.h` + `sort_limit_as_topn.cpp`
+- `TopNPlanNode`: `GetN() -> size_t`, `GetOrderBy() -> const std::vector<OrderBy>&`, `GetChildPlan()`.
+- `.cpp` stubs use `NotImplementedException` (not `UNIMPLEMENTED`) — constructor is an empty `{}` (doesn't store `plan_`/child), `Init()` throws, `Next()` `return false`, `GetNumInHeap()` throws. `GetNumInHeap()` is graded (`ensure:` checks in `.slt` likely assert heap size ≤ N at some point) — must track a real heap/container sized to `plan_->GetN()`, not just a sorted vector, if the check inspects size mid-scan.
+- **`sort_limit_as_topn.cpp` is currently a total no-op**: `auto Optimizer::OptimizeSortLimitAsTopN(const AbstractPlanNodeRef &plan) -> AbstractPlanNodeRef { // TODO(student): implement sort + limit -> top N optimizer rule \n return plan; }`. Needs: recurse children first (standard pattern), then check if `plan` is `LimitPlanNode` whose child is `SortPlanNode` → replace with `TopNPlanNode(output_schema, sort_child->GetChildPlan(), sort_child->GetOrderBy(), limit_plan->GetLimit())`. Tested by `p3.17-topn.slt`.
+- Design: classic top-N via a heap of size N (bounded), or maintain a sorted structure and evict the worst when exceeding N — reuse `TupleComparator`/`GenerateSortKey` from `execution_common.cpp`. Since it's a pipeline breaker, build fully in `Init()`, emit in `Next()` (mirrors Aggregation/HashJoin pattern already used elsewhere in this codebase).
+
+### `window_function_executor.{h,cpp}` + `window_plan.h` + `topn_per_group_executor.{h,cpp}`
+- `WindowFunctionPlanNode` (`plans/window_plan.h`): `WindowFunctionType` enum = `{CountStarAggregate, CountAggregate, SumAggregate, MinAggregate, MaxAggregate, Rank}` — same 5 aggregate types as regular Aggregation PLUS `Rank`. Each `WindowFunction` struct has `function_` (the aggregate expr), `type_`, `partition_by_` (vector of exprs), `order_by_` (vector of `OrderBy`).
+- Frame semantics per header comment: **with ORDER BY** → frame = UNBOUNDED PRECEDING to CURRENT ROW (running/cumulative aggregate); **without ORDER BY** → frame = UNBOUNDED PRECEDING to UNBOUNDED FOLLOWING (whole-partition aggregate, same value repeated for every row in the partition). This matches the project notes ("frame: with ORDER BY = first-to-current, without = entire partition").
+- `.cpp` current state: constructor DOES store `plan_`/`child_executor_` (already correct, unlike TopN's empty ctor) — `Init()` throws `NotImplementedException`, `Next()` returns `false`.
+- RANK ties: enum has no special metadata: standard SQL `RANK()` semantics expected — tied rows (equal ORDER BY key) get the same rank, and the next rank skips by the number of ties (e.g. 1,1,3, not 1,1,2). No explicit tie-breaking hint found in code — implement standard RANK behavior and verify against `p3.20-window-function.slt`.
+- Design: for each output row, need to know its partition (via `MakeAggregateKey`-style grouping on `partition_by_` — can likely reuse `AggregateKey`/`std::hash<AggregateKey>` from `plans/aggregation_plan.h`) and its position within the partition's ORDER BY. Likely approach: buffer all child tuples in `Init()`, group by partition key, sort each partition by `order_by_` (reuse `TupleComparator`), then compute running aggregate/rank per partition, finally re-emit rows in ORIGINAL input order (window functions don't reorder output — they add a computed column) — need to track original tuple order/index separately from the sort-for-computation order.
+- **`topn_per_group_executor.{h,cpp}` is a SEPARATE, unrelated executor** (not used by window functions) — has its own `TopNPerGroupPlanNode` with `GetOrderBy()`, `GetGroupBy()`, `GetN()` (top-N per group, e.g. "top 3 scores per player" for leaderboard queries). Same stub shape as WindowFunction: ctor stores plan+child, `Init()` throws `NotImplementedException`, `Next()` returns `false`. Relevant tests: `p3.leaderboard-q1/q1-index/q1-window/q2/q3.slt`.
+- Test files confirmed present: `test/sql/p3.20-window-function.slt` (2.0K), `p3.leaderboard-q1-window.slt` (525B), plus q1/q1-index/q2/q3 variants.
+
+**Suggested Task #4 order** (easiest → hardest, matches dependency chain): `TupleComparator`+`GenerateSortKey` (used by everything below) → `Limit` (trivial, no dependencies) → `sort_limit_as_topn` optimizer + `TopN` executor → `ExternalMergeSort` → `WindowFunction` (+ `TopNPerGroup` if in scope). Tests: `p3.16-sort-limit`, `p3.17-topn`, `p3.18/19-integration`, `p3.20-window-function`, `p3.leaderboard-*`.
 
 ---
 

@@ -11,27 +11,76 @@
 //===----------------------------------------------------------------------===//
 
 #include "execution/execution_common.h"
+#include <cstddef>
 
+#include "binder/bound_order_by.h"
 #include "catalog/catalog.h"
 #include "common/macros.h"
 #include "concurrency/transaction_manager.h"
 #include "fmt/core.h"
 #include "storage/table/table_heap.h"
+#include "type/type.h"
+#include "type/value.h"
 
 namespace bustub {
 
 TupleComparator::TupleComparator(std::vector<OrderBy> order_bys) : order_bys_(std::move(order_bys)) {}
 
-/** TODO(P3): Implement the comparison method */
-auto TupleComparator::operator()(const SortEntry &entry_a, const SortEntry &entry_b) const -> bool { return false; }
+auto TupleComparator::operator()(const SortEntry &entry_a, const SortEntry &entry_b) const -> bool {
+  const auto &[sk_a, t_a] = entry_a;
+  const auto &[sk_b, t_b] = entry_b;
+  for (size_t i = 0; i < order_bys_.size(); i += 1) {
+    const auto &[ob_type, ob_null_type, expr_ref] = order_bys_[i];
+    BUSTUB_ASSERT(ob_type != OrderByType::INVALID, "Order by type can not be invalid");
 
-/**
- * Generate sort key for a tuple based on the order by expressions.
- *
- * TODO(P3): Implement this method.
- */
+    const auto &va = sk_a[i];
+    const auto &vb = sk_b[i];
+
+    if (va.IsNull() || vb.IsNull()) {
+      if (va.IsNull() && vb.IsNull()) {
+        continue;  // both null, tie, move next
+      }
+
+      auto is_null_first = (ob_null_type == OrderByNullType::NULLS_FIRST ||
+                            (ob_null_type == OrderByNullType::DEFAULT &&
+                             (ob_type == OrderByType::ASC || ob_type == OrderByType::DEFAULT)));
+
+      // if va is null then a is first if NULLS_FIRST
+      // else, va is null then a is first if NULL_LAST
+      return va.IsNull() ? is_null_first : !is_null_first;
+    }
+
+    if (auto e_cmp = va.CompareEquals(vb); e_cmp == CmpBool::CmpTrue) {
+      continue;
+    }
+
+    if (auto le_cmp = va.CompareLessThan(vb); le_cmp == CmpBool::CmpTrue) {
+      if (ob_type == OrderByType::ASC || ob_type == OrderByType::DEFAULT) {
+        return true;
+      }
+      return false;
+    }
+
+    if (auto ge_cmp = va.CompareGreaterThan(vb); ge_cmp == CmpBool::CmpTrue) {
+      if (ob_type == OrderByType::DESC) {
+        return true;
+      }
+      return false;
+    }
+  }
+
+  return false;  // nothing in order_bys to make tupleA appear before tupleB
+}
+
 auto GenerateSortKey(const Tuple &tuple, const std::vector<OrderBy> &order_bys, const Schema &schema) -> SortKey {
-  return {};
+  auto result_sortkey = SortKey{};
+
+  for (const auto &ob : order_bys) {
+    auto [ob_type, ob_null_type, expr_ref] = ob;
+    result_sortkey.emplace_back(expr_ref->Evaluate(&tuple, schema));
+  }
+
+  return result_sortkey;
 }
 
 /**
