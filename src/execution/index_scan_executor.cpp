@@ -59,7 +59,7 @@ auto IndexScanExecutor::Next(std::vector<bustub::Tuple> *tuple_batch, std::vecto
   tuple_batch->reserve(batch_size);
   rid_batch->reserve(batch_size);
 
-  if (isPointLookup()) {
+  if (IsPointLookup()) {
     if (rid_pos_ >= rid_.size()) {
       return false;
     }
@@ -94,6 +94,6 @@ auto IndexScanExecutor::Next(std::vector<bustub::Tuple> *tuple_batch, std::vecto
   return !tuple_batch->empty();
 }
 
-auto IndexScanExecutor::isPointLookup() -> bool { return !plan_->pred_keys_.empty(); }
+auto IndexScanExecutor::IsPointLookup() -> bool { return !plan_->pred_keys_.empty(); }
 
 }  // namespace bustub

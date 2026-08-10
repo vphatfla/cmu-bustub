@@ -56,7 +56,7 @@ void NestedLoopJoinExecutor::Init() {
 
   left_pos_ = 0;
   right_pos_ = 0;
-  did_left_match = false;
+  did_left_match_ = false;
 }
 
 /**
@@ -116,10 +116,10 @@ auto NestedLoopJoinExecutor::Next(std::vector<bustub::Tuple> *tuple_batch, std::
 
       auto result = plan_->Predicate()->EvaluateJoin(&left_tuple, left_executor_->GetOutputSchema(), &right_tuple,
                                                      right_executor_->GetOutputSchema());
-      if (!result.IsNull() && result.GetAs<bool>() == true) {
+      if (!result.IsNull() && result.GetAs<bool>()) {
         tuple_batch->emplace_back(ConstructOutTuple(left_tuple, &right_tuple));
         rid_batch->emplace_back(RID{});
-        did_left_match = true;
+        did_left_match_ = true;
         batch_size -= 1;
       }
 
@@ -128,7 +128,7 @@ auto NestedLoopJoinExecutor::Next(std::vector<bustub::Tuple> *tuple_batch, std::
 
     if (batch_size > 0) {
       // we should have iterated through all the right tuples given the current left tuples, check for left join
-      if (right_pos_ >= right_tuples_.size() && !did_left_match && plan_->GetJoinType() == JoinType::LEFT) {
+      if (right_pos_ >= right_tuples_.size() && !did_left_match_ && plan_->GetJoinType() == JoinType::LEFT) {
         tuple_batch->emplace_back(ConstructOutTuple(left_tuple, nullptr));
         rid_batch->emplace_back(RID{});
         batch_size -= 1;
@@ -137,7 +137,7 @@ auto NestedLoopJoinExecutor::Next(std::vector<bustub::Tuple> *tuple_batch, std::
 
     if (right_pos_ >= right_tuples_.size()) {
       left_pos_ += 1;
-      did_left_match = false;
+      did_left_match_ = false;
     }
   }
 

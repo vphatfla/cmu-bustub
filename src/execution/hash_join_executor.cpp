@@ -36,10 +36,10 @@ namespace bustub {
 namespace {
 /** @brief bundles one side of the join (left or right) so Init() can loop over both instead of duplicating calls */
 struct JoinSide {
-  AbstractExecutor &child;
-  const std::vector<AbstractExpressionRef> &key_exprs;
-  std::vector<std::vector<page_id_t>> &partitions;
-  std::vector<int> &tuple_count;
+  AbstractExecutor &child_;
+  const std::vector<AbstractExpressionRef> &key_exprs_;
+  std::vector<std::vector<page_id_t>> &partitions_;
+  std::vector<int> &tuple_count_;
 };
 }  // namespace
 
@@ -90,7 +90,7 @@ void HashJoinExecutor::Init() {
   };
 
   for (const auto &side : sides) {
-    InitHashPages(side.child, side.key_exprs, side.partitions, side.tuple_count);
+    InitHashPages(side.child_, side.key_exprs_, side.partitions_, side.tuple_count_);
   }
 
   uint32_t repartition_salt = 1;
@@ -102,8 +102,8 @@ void HashJoinExecutor::Init() {
 
     // buffer up the left and right partitions
     for (uint16_t i = 0; i < NUM_PARTITIONS; i += 1) {
-      left_partitions_.emplace_back(std::vector<page_id_t>{});
-      right_partitions_.emplace_back(std::vector<page_id_t>{});
+      left_partitions_.emplace_back();
+      right_partitions_.emplace_back();
 
       left_partition_tuple_count_.emplace_back(0);
       right_partition_tuple_count_.emplace_back(0);
@@ -111,8 +111,8 @@ void HashJoinExecutor::Init() {
 
     for (const auto &i : indexes_repartition) {
       for (const auto &side : sides) {
-        RehashPartiton(side.partitions, i, repartition_salt, side.child.GetOutputSchema(), side.key_exprs,
-                       side.tuple_count);
+        RehashPartiton(side.partitions_, i, repartition_salt, side.child_.GetOutputSchema(), side.key_exprs_,
+                       side.tuple_count_);
       }
     }
 
@@ -157,13 +157,13 @@ auto HashJoinExecutor::AdvanceToNextBucketIfNeeded() -> bool {
   const bool current_bucket_exhausted =
       left_partition_bucket_index_ == -1 ||
       (left_partition_tuple_index_ >= left_partition_page_size_ &&
-       static_cast<size_t>(left_partition_page_index_ + 1) >= left_partitions_[left_partition_bucket_index_].size());
+       static_cast<size_t>(left_partition_page_index_) + 1 >= left_partitions_[left_partition_bucket_index_].size());
 
   if (!current_bucket_exhausted) {
     return true;
   }
 
-  if (static_cast<size_t>(left_partition_bucket_index_ + 1) >= left_partitions_.size()) {
+  if (static_cast<size_t>(left_partition_bucket_index_) + 1 >= left_partitions_.size()) {
     // no more buckets left, fully done streaming the left side
     return false;
   }

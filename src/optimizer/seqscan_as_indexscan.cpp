@@ -10,6 +10,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include <algorithm>
 #include <memory>
 #include <optional>
 #include <tuple>
@@ -34,7 +35,7 @@ using DeComparisonExprType = std::tuple<unsigned int, AbstractExpressionRef, Abs
  * @params shared_ptr of ComparisonExpression
  * @return optional tuple of { ColumnIdx, ColumnValueExpressionRef, ConstantValueExpressionRef}
  */
-auto SplitComparisonExpr(AbstractExpressionRef expr) -> std::optional<DeComparisonExprType> {
+auto SplitComparisonExpr(const AbstractExpressionRef &expr) -> std::optional<DeComparisonExprType> {
   // single constant comparison, e.g WHERE colA = x;
   const auto *comp_expr = dynamic_cast<const ComparisonExpression *>(expr.get());
 
@@ -65,7 +66,7 @@ auto SplitComparisonExpr(AbstractExpressionRef expr) -> std::optional<DeComparis
  * @params, expr that needs to be resolved/splitted
  * @params OUT result_vector of tuples, tuple = {ColumnIdx, ColumnValueExpressionRef, ConstantValueExpressionRef}
  */
-auto ResolveExpr(AbstractExpressionRef expr, std::vector<DeComparisonExprType> *result_vector) -> bool {
+auto ResolveExpr(const AbstractExpressionRef &expr, std::vector<DeComparisonExprType> *result_vector) -> bool {
   BUSTUB_ASSERT(result_vector != nullptr, "in param vector can not be null");
 
   const auto *logic_expr = dynamic_cast<const LogicExpression *>(expr.get());
@@ -84,13 +85,8 @@ auto ResolveExpr(AbstractExpressionRef expr, std::vector<DeComparisonExprType> *
     return false;
   }
   // expr is a logical OR
-  for (const auto &child_expr : logic_expr->children_) {
-    if (!ResolveExpr(child_expr, result_vector)) {
-      return false;
-    }
-  }
-
-  return true;
+  return std::all_of(logic_expr->children_.begin(), logic_expr->children_.end(),
+                     [result_vector](const auto &child_expr) { return ResolveExpr(child_expr, result_vector); });
 }
 
 /**

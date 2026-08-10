@@ -35,7 +35,7 @@
 namespace bustub {
 
 // @brief slit the equi condition expr into 2 col exprs
-auto SplitEquiJoinExprIntoHashKeys(AbstractExpressionRef expr, std::vector<AbstractExpressionRef> *left_keys,
+auto SplitEquiJoinExprIntoHashKeys(const AbstractExpressionRef &expr, std::vector<AbstractExpressionRef> *left_keys,
                                    std::vector<AbstractExpressionRef> *right_keys) -> bool {
   const auto *cmp_expr = dynamic_cast<const ComparisonExpression *>(expr.get());
 
@@ -43,19 +43,19 @@ auto SplitEquiJoinExprIntoHashKeys(AbstractExpressionRef expr, std::vector<Abstr
     return false;
   }
   if (cmp_expr->comp_type_ == ComparisonType::Equal) {
-    const auto *colOne = dynamic_cast<const ColumnValueExpression *>(cmp_expr->GetChildAt(0).get());
-    const auto *colTwo = dynamic_cast<const ColumnValueExpression *>(cmp_expr->GetChildAt(1).get());
+    const auto *col_one = dynamic_cast<const ColumnValueExpression *>(cmp_expr->GetChildAt(0).get());
+    const auto *col_two = dynamic_cast<const ColumnValueExpression *>(cmp_expr->GetChildAt(1).get());
 
-    if (colOne == nullptr || colTwo == nullptr) {
+    if (col_one == nullptr || col_two == nullptr) {
       return false;
     }
 
-    if (colOne->GetTupleIdx() == 0 && colTwo->GetTupleIdx() == 1) {
+    if (col_one->GetTupleIdx() == 0 && col_two->GetTupleIdx() == 1) {
       left_keys->emplace_back(expr->GetChildAt(0));
       right_keys->emplace_back(expr->GetChildAt(1));
       return true;
     }
-    if (colOne->GetTupleIdx() == 1 && colTwo->GetTupleIdx() == 0) {
+    if (col_one->GetTupleIdx() == 1 && col_two->GetTupleIdx() == 0) {
       left_keys->emplace_back(expr->GetChildAt(1));
       right_keys->emplace_back(expr->GetChildAt(0));
       return true;
@@ -65,7 +65,7 @@ auto SplitEquiJoinExprIntoHashKeys(AbstractExpressionRef expr, std::vector<Abstr
   return false;
 }
 // @brief flatten the original predicate expression from the NLJ into left_keys and right_keys respectively
-auto ResolveNLJToHashKey(AbstractExpressionRef expr, std::vector<AbstractExpressionRef> *left_keys,
+auto ResolveNLJToHashKey(const AbstractExpressionRef &expr, std::vector<AbstractExpressionRef> *left_keys,
                          std::vector<AbstractExpressionRef> *right_keys) -> bool {
   BUSTUB_ASSERT(left_keys != nullptr, "OUT PARAM vector cannot be null");
   BUSTUB_ASSERT(right_keys != nullptr, "OUT PARAM vector cannot be null");

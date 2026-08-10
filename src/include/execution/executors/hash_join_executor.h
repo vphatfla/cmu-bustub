@@ -161,16 +161,16 @@ class HashJoinExecutor : public AbstractExecutor {
                    const std::vector<AbstractExpressionRef> &key_exprs) const -> HashKey;
 
   // @brief helper to get the partition index given the hashkey and salt level
-  auto GetHashPartitionIndex(const HashKey &key, const uint32_t salt) const -> size_t;
+  auto GetHashPartitionIndex(const HashKey &key, uint32_t salt) const -> size_t;
 
   // @brief helper to rehash tuple in partition
-  void RehashPartiton(std::vector<std::vector<page_id_t>> &partitions, const size_t index, const uint32_t salt,
+  void RehashPartiton(std::vector<std::vector<page_id_t>> &partitions, size_t index, uint32_t salt,
                       const Schema &tuple_schema, const std::vector<AbstractExpressionRef> &key_exprs,
                       std::vector<int> &partition_tuple_count);
 
   // @brief helper to insert a tuple into a page within a partition
   void InsertTupleIntoPartition(const Tuple &tuple, std::vector<std::vector<page_id_t>> &partitions,
-                                const size_t partition_index, std::vector<int> &partition_tuple_count);
+                                size_t partition_index, std::vector<int> &partition_tuple_count);
 
   // @brief helper to check if the partitions need rehasing/repartition
   auto GetIndexesToRepartition(const std::vector<int> &partition_tuple_count) -> std::vector<int>;

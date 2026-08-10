@@ -190,9 +190,9 @@ auto WindowFunctionExecutor::InitBucketValue(WindowFunctionType wft) const -> Va
   return ValueFactory::GetNullValueByType(TypeId::INTEGER);
 }
 
-void WindowFunctionExecutor::CombineValueOverBucket(WindowFunctionType wtf, Value *out_value,
+void WindowFunctionExecutor::CombineValueOverBucket(WindowFunctionType wft, Value *out_value,
                                                     const Value &in_value) const {
-  switch (wtf) {
+  switch (wft) {
     case bustub::WindowFunctionType::CountStarAggregate:
       *out_value = out_value->Add(ValueFactory::GetIntegerValue(1));
       return;

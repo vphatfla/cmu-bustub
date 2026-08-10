@@ -65,6 +65,6 @@ class IndexScanExecutor : public AbstractExecutor {
   std::optional<BPlusTreeIndexIteratorForTwoIntegerColumn> tree_iterator_{};
 
   // @brief return true if this index scan using point look up or ordered scan
-  auto isPointLookup() -> bool;
+  auto IsPointLookup() -> bool;
 };
 }  // namespace bustub

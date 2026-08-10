@@ -92,7 +92,7 @@ class MergeSortRun {
      * on different sorted runs.
      */
     auto operator!=(const Iterator &other) const -> bool {
-      return !(run_ == other.run_ && page_idx_ == other.page_idx_ && tuple_idx_ == other.tuple_idx_);
+      return run_ != other.run_ || page_idx_ != other.page_idx_ || tuple_idx_ != other.tuple_idx_;
     }
 
    private:

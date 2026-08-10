@@ -43,7 +43,7 @@ class IndexIterator {
                 page_id_t page_id, const std::optional<KeyType> &key);
 
   IndexIterator(IndexIterator &&other) noexcept = default;
-  IndexIterator &operator=(IndexIterator &&other) noexcept = default;
+  auto operator=(IndexIterator &&other) noexcept -> IndexIterator & = default;
 
   auto IsEnd() -> bool;
 

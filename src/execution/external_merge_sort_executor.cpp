@@ -48,8 +48,8 @@ void ExternalMergeSortExecutor<K>::Init() {
     // sort the child_tuples
     auto sort_entries = std::vector<SortEntry>{};
     for (const auto &tuple : child_tuples) {
-      sort_entries.emplace_back(
-          SortEntry{GenerateSortKey(tuple, plan_->GetOrderBy(), child_executor_->GetOutputSchema()), tuple});
+      sort_entries.emplace_back(GenerateSortKey(tuple, plan_->GetOrderBy(), child_executor_->GetOutputSchema()),
+                                tuple);
     }
     std::sort(sort_entries.begin(), sort_entries.end(), cmp_);
 
@@ -111,7 +111,8 @@ void ExternalMergeSortExecutor<K>::RecursiveMerge() {
 
   for (size_t i = 0; i < merge_sort_runs_.size(); i += 2) {
     if (i + 1 < merge_sort_runs_.size()) {
-      auto r1 = std::move(merge_sort_runs_[i]), r2 = std::move(merge_sort_runs_[i + 1]);
+      auto r1 = std::move(merge_sort_runs_[i]);
+      auto r2 = std::move(merge_sort_runs_[i + 1]);
       new_level_merge_sort_runs.emplace_back(MergeTwoRuns(r1, r2));
       r1.DeleteAllPages();
       r2.DeleteAllPages();

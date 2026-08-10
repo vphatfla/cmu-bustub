@@ -70,7 +70,7 @@ class NestedLoopJoinExecutor : public AbstractExecutor {
   size_t right_pos_{0};
 
   /** bool track to check if the left tuple was matched with any right tuple, used for left join */
-  bool did_left_match{false};
+  bool did_left_match_{false};
 
   /** @brief private helper to construct the tuple given this executor output schema */
   auto ConstructOutTuple(const Tuple &left, const Tuple *right) -> Tuple;

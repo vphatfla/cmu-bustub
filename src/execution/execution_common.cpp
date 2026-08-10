@@ -55,17 +55,11 @@ auto TupleComparator::operator()(const SortEntry &entry_a, const SortEntry &entr
     }
 
     if (auto le_cmp = va.CompareLessThan(vb); le_cmp == CmpBool::CmpTrue) {
-      if (ob_type == OrderByType::ASC || ob_type == OrderByType::DEFAULT) {
-        return true;
-      }
-      return false;
+      return ob_type == OrderByType::ASC || ob_type == OrderByType::DEFAULT;
     }
 
     if (auto ge_cmp = va.CompareGreaterThan(vb); ge_cmp == CmpBool::CmpTrue) {
-      if (ob_type == OrderByType::DESC) {
-        return true;
-      }
-      return false;
+      return ob_type == OrderByType::DESC;
     }
   }
 
