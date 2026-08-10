@@ -12,13 +12,18 @@
 
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
 #include <memory>
+#include <unordered_map>
 #include <vector>
 
 #include "execution/executor_context.h"
 #include "execution/executors/abstract_executor.h"
+#include "execution/plans/aggregation_plan.h"
 #include "execution/plans/window_plan.h"
 #include "storage/table/tuple.h"
+#include "type/value.h"
 
 namespace bustub {
 
@@ -79,5 +84,28 @@ class WindowFunctionExecutor : public AbstractExecutor {
 
   /** The child executor from which tuples are obtained */
   std::unique_ptr<AbstractExecutor> child_executor_;
+
+  // In mem vector for child tuple, assume that all tuples will fit in mem
+  std::vector<Tuple> child_tuples_;
+
+  // position tracker for next() pagination, for the tuples within child_tuples_
+  size_t postion_tracker_;
+
+  // presentation order of the tuples, if order by is present in one of the partition bys, then the Next() need to obey
+  // this order, this will be built in Init()
+  std::vector<size_t> presentation_index_order_;
+
+  // in mem results for the partitions by, key = col_index, value = vector<Value>, col_indx  = output column index for
+  // the window functions
+  std::unordered_map<uint32_t, std::vector<Value>> window_func_results_;
+
+  // @brief - to init the aggregate value for the buckets of tuples based on the window_function type (Sum, Max,..)
+  auto InitBucketValue(WindowFunctionType wft) const -> Value;
+
+  // @brief = to build the aggregate value
+  // @param window_function_type
+  // @param OUT result_value (over multiple tuples)
+  // @param value
+  void CombineValueOverBucket(WindowFunctionType wft, Value *out_value, const Value &in_value) const;
 };
 }  // namespace bustub
