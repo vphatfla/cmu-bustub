@@ -41,22 +41,52 @@ void ExternalMergeSortExecutor<K>::Init() {
   auto child_tuples = std::vector<Tuple>{};
   auto child_rids = std::vector<RID>{};
 
-  // build the P0 runs: each chunk read from the child (BUSTUB_BATCH_SIZE tuples) is sorted
-  // independently in memory, then spilled as exactly ONE run. A run must never span more than
-  // one sort chunk, otherwise the run would not be internally sorted end-to-end.
-  while (child_executor_->Next(&child_tuples, &child_rids, BUSTUB_BATCH_SIZE)) {
-    // sort the child_tuples
-    auto sort_entries = std::vector<SortEntry>{};
-    for (const auto &tuple : child_tuples) {
-      sort_entries.emplace_back(GenerateSortKey(tuple, plan_->GetOrderBy(), child_executor_->GetOutputSchema()),
-                                tuple);
-    }
-    std::sort(sort_entries.begin(), sort_entries.end(), cmp_);
+  // Size each P0 run off a memory budget proportional to the ACTUAL buffer pool (not a fixed
+  // literal), mirroring the classic external-sort design of using (B - reserve) buffer pages for
+  // the initial sorted run. Reserve a couple of pages for the concurrent input/output pages
+  // MergeTwoRuns touches during later merge passes. A tiny fixed chunk (e.g. BUSTUB_BATCH_SIZE)
+  // produces far too many runs/merge rounds for large tables, blowing past disk I/O budgets under
+  // a constrained buffer pool; tying the budget to the pool size keeps it correct across pool sizes.
+  constexpr size_t merge_overhead_reserve_pages = 2;
+  const size_t bpm_size = exec_ctx_->GetBufferPoolManager()->Size();
+  const size_t run_page_budget = bpm_size > merge_overhead_reserve_pages ? bpm_size - merge_overhead_reserve_pages : 1;
+  const size_t run_byte_budget = run_page_budget * BUSTUB_PAGE_SIZE;
 
-    // this chunk becomes its own new run, spanning as many pages as it needs
-    merge_sort_runs_.emplace_back(MergeSortRun{std::vector<page_id_t>{}, exec_ctx_->GetBufferPoolManager()});
-    for (const auto &e : sort_entries) {
-      merge_sort_runs_.back().InsertTuple(e.second);
+  auto chunk_tuples = std::vector<Tuple>{};
+  size_t chunk_bytes = 0;
+
+  while (true) {
+    bool child_has_more = child_executor_->Next(&child_tuples, &child_rids, BUSTUB_BATCH_SIZE);
+    for (const auto &tuple : child_tuples) {
+      chunk_bytes += tuple.GetLength();
+      chunk_tuples.emplace_back(tuple);
+    }
+
+    // Flush the accumulated chunk into its own run once it reaches the byte budget, or once the
+    // child is exhausted (whatever remains becomes the final, possibly smaller, run). A run must
+    // never span more than one flush, otherwise it wouldn't be internally sorted end-to-end.
+    bool should_flush = !chunk_tuples.empty() && (chunk_bytes >= run_byte_budget || !child_has_more);
+    if (should_flush) {
+      auto sort_entries = std::vector<SortEntry>{};
+      sort_entries.reserve(chunk_tuples.size());
+      for (const auto &tuple : chunk_tuples) {
+        sort_entries.emplace_back(GenerateSortKey(tuple, plan_->GetOrderBy(), child_executor_->GetOutputSchema()),
+                                  tuple);
+      }
+      std::sort(sort_entries.begin(), sort_entries.end(), cmp_);
+
+      // this chunk becomes its own new run, spanning as many pages as it needs
+      merge_sort_runs_.emplace_back(MergeSortRun{std::vector<page_id_t>{}, exec_ctx_->GetBufferPoolManager()});
+      for (const auto &e : sort_entries) {
+        merge_sort_runs_.back().InsertTuple(e.second);
+      }
+
+      chunk_tuples.clear();
+      chunk_bytes = 0;
+    }
+
+    if (!child_has_more) {
+      break;
     }
   }
 

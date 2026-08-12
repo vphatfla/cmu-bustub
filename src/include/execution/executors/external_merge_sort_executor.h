@@ -148,7 +148,12 @@ class MergeSortRun {
       auto *page = write_guard.AsMut<IntermediateResultPage>();
       page->Init();
 
-      BUSTUB_ASSERT(page->InsertTuple(tuple), "New page insert must success");
+      // NOTE: the insert must happen as a plain statement, not inside BUSTUB_ASSERT's expression.
+      // BUSTUB_ASSERT expands to assert(), which compiles to nothing under NDEBUG (i.e. in Release
+      // builds) -- wrapping a side-effecting call directly in the assert silently discarded the
+      // insert itself in Release, losing exactly the first tuple of every new page.
+      bool inserted = page->InsertTuple(tuple);
+      BUSTUB_ASSERT(inserted, "New page insert must success");
     }
   }
 

@@ -365,7 +365,12 @@ void HashJoinExecutor::InsertTupleIntoPartition(const Tuple &tuple, std::vector<
     auto *p = write_page_guard.AsMut<IntermediateResultPage>();
     p->Init();
 
-    BUSTUB_ASSERT(p->InsertTuple(tuple), "new page insert must success");
+    // NOTE: the insert must happen as a plain statement, not inside BUSTUB_ASSERT's expression.
+    // BUSTUB_ASSERT expands to assert(), which compiles to nothing under NDEBUG (i.e. in Release
+    // builds) -- wrapping a side-effecting call directly in the assert silently discarded the
+    // insert itself in Release, losing exactly the first tuple of every new partition page.
+    bool inserted = p->InsertTuple(tuple);
+    BUSTUB_ASSERT(inserted, "new page insert must success");
 
     pids.emplace_back(pid);
   }

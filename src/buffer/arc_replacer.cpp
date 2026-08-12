@@ -108,6 +108,10 @@ void ArcReplacer::RecordAccess(frame_id_t frame_id, page_id_t page_id, [[maybe_u
       // found in mru_ghost_, increase the mru_target_size_, move to front of mfu_
       if (mru_ghost_.size() >= mfu_ghost_.size()) {
         mru_target_size_ += 1;
+      } else if (mru_ghost_.empty()) {
+        // mfu_ghost_ / mru_ghost_ would divide by zero; an empty mru_ghost_ against a non-empty
+        // mfu_ghost_ is the most lopsided case possible, so saturate the target (clamped below).
+        mru_target_size_ = replacer_size_;
       } else {
         auto delta = std::floor(static_cast<double>(mfu_ghost_.size()) / mru_ghost_.size());
         mru_target_size_ += delta;
@@ -118,6 +122,10 @@ void ArcReplacer::RecordAccess(frame_id_t frame_id, page_id_t page_id, [[maybe_u
       // found in mfu_ghost_, decrease mru_target_size_, move to front of mfu_
       if (mfu_ghost_.size() >= mru_ghost_.size()) {
         mru_target_size_ -= 1;
+      } else if (mfu_ghost_.empty()) {
+        // mru_ghost_ / mfu_ghost_ would divide by zero; an empty mfu_ghost_ against a non-empty
+        // mru_ghost_ is the most lopsided case possible, so saturate the target down to zero.
+        mru_target_size_ = 0;
       } else {
         auto delta = std::floor(static_cast<double>(mru_ghost_.size()) / mfu_ghost_.size());
         if (mru_target_size_ < delta) {
